@@ -1,8 +1,11 @@
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from insightcast.core.exceptions import InsightCastError
 from insightcast.domain.enums import ErrorCode
 from insightcast.domain.models import TranscriptSegment
+from insightcast.prompts import translation as translation_prompt
 
 
 class LingoModel(BaseModel):
@@ -12,6 +15,10 @@ class LingoModel(BaseModel):
 class TranslationItem(LingoModel):
     segment_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
+
+
+class TranslationResponse(LingoModel):
+    items: list[TranslationItem]
 
 
 class SubtitleItem(LingoModel):
@@ -29,6 +36,43 @@ class SubtitleItem(LingoModel):
 
 
 class LingoEngine:
+    def __init__(self, *, client: Any | None = None, model: str | None = None) -> None:
+        self.client = client
+        self.model = model
+
+    async def translate_clip(
+        self,
+        *,
+        segments: list[TranscriptSegment],
+        clip_start_seconds: float,
+        clip_end_seconds: float,
+    ) -> list[SubtitleItem]:
+        selected = [
+            segment
+            for segment in segments
+            if segment.end_seconds > clip_start_seconds
+            and segment.start_seconds < clip_end_seconds
+        ]
+        if self.client is None or self.model is None:
+            raise self._generation_error("Translation client is not configured.")
+        response = await self.client.parse(
+            model=self.model,
+            system_prompt=translation_prompt.SYSTEM_PROMPT,
+            user_prompt=translation_prompt.build_user_prompt(
+                items=[
+                    {"segment_id": segment.segment_id, "text": segment.text}
+                    for segment in selected
+                ]
+            ),
+            response_model=TranslationResponse,
+        )
+        return self.prepare_subtitle_items(
+            segments=segments,
+            translations=response.items,
+            clip_start_seconds=clip_start_seconds,
+            clip_end_seconds=clip_end_seconds,
+        )
+
     def prepare_subtitle_items(
         self,
         *,
@@ -78,4 +122,3 @@ class LingoEngine:
             details=details,
             stage="subtitle_generation",
         )
-
