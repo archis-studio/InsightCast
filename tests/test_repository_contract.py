@@ -77,7 +77,24 @@ def test_readme_documents_local_mvp_operations_without_docker_yet() -> None:
     ]
     for text in required_text:
         assert text in readme, text
-    assert "docker build" not in readme.lower()
+
+
+def test_docker_contract_uses_cpu_python_ffmpeg_non_root_and_documented_volume() -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "FROM python:3.12-slim" in dockerfile
+    assert "ffmpeg" in dockerfile
+    assert "USER app" in dockerfile
+    assert "EXPOSE 8765" in dockerfile
+    assert 'CMD ["uv", "run", "--no-sync", "cast_api"]' in dockerfile
+    assert ".env" in dockerignore
+    assert ".venv" in dockerignore
+    assert "outputs" in dockerignore
+    assert "docker build -t insightcast ." in readme
+    assert "--env-file .env" in readme
+    assert '$(pwd)/outputs:/app/outputs' in readme
 
 
 def test_git_does_not_track_secrets_or_generated_media() -> None:
