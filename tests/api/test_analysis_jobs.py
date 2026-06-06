@@ -53,6 +53,12 @@ class FakeService:
         )
 
     async def create_render(self, job_id: str, request: object) -> RenderBatch:
+        if job_id == "not-ready":
+            raise InsightCastError(
+                ErrorCode.INVALID_JOB_STATE,
+                "Analysis job is not ready for candidate rendering.",
+                details={"job_id": job_id, "status": JobStatus.TRANSCRIBING},
+            )
         return RenderBatch(
             render_id="render-1",
             candidate_ids=request.candidate_ids,
@@ -140,3 +146,22 @@ def test_request_validation_error_is_json_serializable(tmp_path: Path) -> None:
     assert response.status_code == 422
     assert response.json()["error_code"] == "INVALID_REQUEST"
     assert response.json()["details"]["errors"]
+
+
+def test_invalid_job_state_returns_conflict(tmp_path: Path) -> None:
+    client, _ = make_client(tmp_path)
+    with client:
+        response = client.post(
+            "/api/v1/analysis-jobs/not-ready/renders",
+            json={"candidate_ids": "A"},
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "error_code": "INVALID_JOB_STATE",
+        "message": "Analysis job is not ready for candidate rendering.",
+        "details": {
+            "job_id": "not-ready",
+            "status": "TRANSCRIBING",
+        },
+    }

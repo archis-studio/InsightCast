@@ -270,6 +270,26 @@ async def test_render_rejects_unknown_candidate(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_render_rejects_analysis_job_before_selection_is_ready(
+    tmp_path: Path,
+) -> None:
+    service, _, _ = make_service(tmp_path)
+    job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+
+    with pytest.raises(InsightCastError) as exc_info:
+        await service.create_render(
+            job.job_id,
+            CandidateSelectionRequest(candidate_ids="A"),
+        )
+
+    assert exc_info.value.error_code.value == "INVALID_JOB_STATE"
+    assert exc_info.value.details == {
+        "job_id": job.job_id,
+        "status": JobStatus.QUEUED,
+    }
+
+
+@pytest.mark.asyncio
 async def test_direct_render_is_unique_and_does_not_call_curator(tmp_path: Path) -> None:
     service, curator, _ = make_service(tmp_path)
 
@@ -346,3 +366,40 @@ async def test_analysis_removes_provisional_output_after_final_directory_is_know
     assert not provisional_dir.exists()
     log = (job.output_dir / "pipeline.log").read_text(encoding="utf-8")
     assert "WAITING_SELECTION" in log
+
+
+@pytest.mark.asyncio
+async def test_pipeline_log_records_analysis_and_render_stage_timings(
+    tmp_path: Path,
+) -> None:
+    service = JobService(
+        output_root=tmp_path / "outputs",
+        work_root=tmp_path / ".work",
+        source_engine=FakeSource(),
+        transcription_client=FakeTranscriber(),
+        curator_engine=FakeCurator(),
+        clip_engine=FakeClip(),
+        publish_engine=FakePublish(),
+        writer=FileJobWriter(),
+        clock=Clock(),
+        id_factory=IdFactory(),
+    )
+    job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+    await service.process(await service.queue.get())
+    await service.create_render(
+        job.job_id,
+        CandidateSelectionRequest(candidate_ids="A"),
+    )
+    await service.process(await service.queue.get())
+
+    log = (job.output_dir / "pipeline.log").read_text(encoding="utf-8")
+    for stage in (
+        "source_ingestion",
+        "transcription",
+        "candidate_curation",
+        "candidate_clip_render",
+        "metadata_generation",
+    ):
+        assert f"stage_started stage={stage}" in log
+        assert f"stage_completed stage={stage}" in log
+    assert "elapsed_seconds=" in log

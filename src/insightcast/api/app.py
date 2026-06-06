@@ -1,6 +1,8 @@
 import asyncio
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -33,7 +35,10 @@ from insightcast.storage.file_job_writer import FileJobWriter
 
 def _build_runtime(settings: Settings) -> tuple[JobService, FfmpegClient]:
     ffmpeg = FfmpegClient(ffmpeg_bin=settings.ffmpeg_bin, crf=settings.video_crf)
-    ytdlp = YtDlpClient(max_height=settings.video_max_height)
+    ytdlp = YtDlpClient(
+        executable=str(Path(sys.executable).with_name("yt-dlp")),
+        max_height=settings.video_max_height,
+    )
     sdk = OpenAI(
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
@@ -135,6 +140,7 @@ def create_app(
             ErrorCode.INVALID_YOUTUBE_URL: 400,
             ErrorCode.INVALID_TIME_RANGE: 400,
             ErrorCode.CANDIDATE_NOT_FOUND: 400,
+            ErrorCode.INVALID_JOB_STATE: 409,
         }.get(exc.error_code, 500)
         return JSONResponse(
             status_code=status_code,

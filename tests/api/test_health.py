@@ -1,9 +1,10 @@
 import asyncio
+import sys
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from insightcast.api.app import create_app
+from insightcast.api.app import _build_runtime, create_app
 from insightcast.core.config import Settings
 
 
@@ -53,3 +54,10 @@ def test_health_reports_dependency_readiness_and_lifespan_probes_once(
     }
     assert ffmpeg.probes == 1
 
+
+def test_runtime_uses_ytdlp_from_current_python_environment(tmp_path: Path) -> None:
+    service, _ = _build_runtime(settings(tmp_path))
+
+    assert Path(service.source_engine.ytdlp.executable) == Path(sys.executable).with_name(
+        "yt-dlp"
+    )

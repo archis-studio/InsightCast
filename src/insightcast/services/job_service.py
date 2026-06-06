@@ -1,10 +1,11 @@
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from time import perf_counter
+from typing import Any, TypeVar
 from uuid import uuid4
 
 from insightcast.core.exceptions import InsightCastError
@@ -23,6 +24,8 @@ from insightcast.domain.models import (
 )
 from insightcast.utils.files import sanitize_filename
 from insightcast.utils.youtube import normalize_youtube_url
+
+StageResult = TypeVar("StageResult")
 
 
 class WorkKind(StrEnum):
@@ -137,6 +140,24 @@ class JobService:
         request: CandidateSelectionRequest,
     ) -> RenderBatch:
         job = self.get_analysis_job(job_id)
+        renderable_statuses = {
+            JobStatus.WAITING_SELECTION,
+            JobStatus.COMPLETED,
+            JobStatus.FAILED,
+        }
+        has_retained_analysis = (
+            bool(job.candidates)
+            and job_id in self._transcripts
+            and job_id in self._source_metadata
+            and job.source_artifacts is not None
+        )
+        if job.status not in renderable_statuses or not has_retained_analysis:
+            raise InsightCastError(
+                ErrorCode.INVALID_JOB_STATE,
+                "Analysis job is not ready for candidate rendering.",
+                details={"job_id": job.job_id, "status": job.status},
+                stage="rendering",
+            )
         candidates = {candidate.candidate_id: candidate for candidate in job.candidates}
         missing = [
             candidate_id
@@ -247,21 +268,29 @@ class JobService:
         job = self.get_analysis_job(job_id)
         try:
             self._set_status(job, JobStatus.INGESTING, "Downloading the source video.")
-            source = await self.source_engine.ingest(
-                youtube_url=job.normalized_youtube_url,
-                job_id=job.job_id,
-                created_at=job.created_at,
-                output_root=self.output_root,
-                direct=False,
+            source = await self._run_stage(
+                job,
+                "source_ingestion",
+                lambda: self.source_engine.ingest(
+                    youtube_url=job.normalized_youtube_url,
+                    job_id=job.job_id,
+                    created_at=job.created_at,
+                    output_root=self.output_root,
+                    direct=False,
+                ),
             )
             provisional_output_dir = job.output_dir
             job.output_dir = source.output_dir
-            self._remove_provisional_output(provisional_output_dir)
+            self._finalize_provisional_output(provisional_output_dir, job.output_dir)
             job.source_artifacts = source.source_artifacts
             self._source_metadata[job_id] = source.metadata
             self._set_status(job, JobStatus.TRANSCRIBING, "Transcribing English audio.")
-            transcript = await self.transcription_client.transcribe(
-                source.source_artifacts.source_audio
+            transcript = await self._run_stage(
+                job,
+                "transcription",
+                lambda: self.transcription_client.transcribe(
+                    source.source_artifacts.source_audio
+                ),
             )
             self._transcripts[job_id] = transcript
             analysis_dir = job.output_dir / "analysis"
@@ -271,11 +300,15 @@ class JobService:
 
             self._set_status(job, JobStatus.CURATING, "Selecting candidate idea arcs.")
             candidate_count, minimum, maximum = self._analysis_options[job_id]
-            result = await self.curator_engine.curate(
-                transcript=transcript,
-                candidate_count=candidate_count,
-                min_duration_minutes=minimum,
-                max_duration_minutes=maximum,
+            result = await self._run_stage(
+                job,
+                "candidate_curation",
+                lambda: self.curator_engine.curate(
+                    transcript=transcript,
+                    candidate_count=candidate_count,
+                    min_duration_minutes=minimum,
+                    max_duration_minutes=maximum,
+                ),
             )
             job.candidates = result.candidates
             candidates_path = analysis_dir / "candidates.json"
@@ -327,21 +360,33 @@ class JobService:
             source_base = job.source_artifacts.source_video.stem.removesuffix(".source")
             base_name = f"{source_base}.{candidate_id.lower()}"
             try:
-                clip = await self.clip_engine.render(
-                    source_video=job.source_artifacts.source_video,
-                    transcript_segments=transcript.segments,
-                    selection=candidate,
-                    output_dir=candidate_dir,
-                    work_dir=self.work_root / job.job_id / batch.render_id,
-                    base_name=base_name,
+                clip = await self._run_stage(
+                    job,
+                    "candidate_clip_render",
+                    lambda candidate=candidate,
+                    candidate_dir=candidate_dir,
+                    base_name=base_name: self.clip_engine.render(
+                        source_video=job.source_artifacts.source_video,
+                        transcript_segments=transcript.segments,
+                        selection=candidate,
+                        output_dir=candidate_dir,
+                        work_dir=self.work_root / job.job_id / batch.render_id,
+                        base_name=base_name,
+                    ),
                 )
                 metadata_path = candidate_dir / f"{base_name}.youtube-metadata.json"
                 excerpt = self._transcript_excerpt(transcript, candidate)
-                await self.publish_engine.generate(
-                    source_metadata=source_metadata,
-                    summary=candidate.summary,
-                    transcript_excerpt=excerpt,
-                    destination=metadata_path,
+                await self._run_stage(
+                    job,
+                    "metadata_generation",
+                    lambda candidate=candidate,
+                    excerpt=excerpt,
+                    metadata_path=metadata_path: self.publish_engine.generate(
+                        source_metadata=source_metadata,
+                        summary=candidate.summary,
+                        transcript_excerpt=excerpt,
+                        destination=metadata_path,
+                    ),
                 )
                 batch.candidate_results[candidate_id] = CandidateRenderResult(
                     candidate_id=candidate_id,
@@ -382,20 +427,28 @@ class JobService:
         job = self.get_direct_render_job(job_id)
         try:
             self._set_status(job, JobStatus.INGESTING, "Downloading the source video.")
-            source = await self.source_engine.ingest(
-                youtube_url=job.normalized_youtube_url,
-                job_id=job.job_id,
-                created_at=job.created_at,
-                output_root=self.output_root,
-                direct=True,
+            source = await self._run_stage(
+                job,
+                "source_ingestion",
+                lambda: self.source_engine.ingest(
+                    youtube_url=job.normalized_youtube_url,
+                    job_id=job.job_id,
+                    created_at=job.created_at,
+                    output_root=self.output_root,
+                    direct=True,
+                ),
             )
             provisional_output_dir = job.output_dir
             job.output_dir = source.output_dir
-            self._remove_provisional_output(provisional_output_dir)
+            self._finalize_provisional_output(provisional_output_dir, job.output_dir)
             job.source_artifacts = source.source_artifacts
             self._set_status(job, JobStatus.TRANSCRIBING, "Transcribing English audio.")
-            transcript = await self.transcription_client.transcribe(
-                source.source_artifacts.source_audio
+            transcript = await self._run_stage(
+                job,
+                "transcription",
+                lambda: self.transcription_client.transcribe(
+                    source.source_artifacts.source_audio
+                ),
             )
             self.writer.write_json(job.output_dir / "analysis" / "transcript.json", transcript)
             self._set_status(job, JobStatus.RENDERING, "Rendering the requested time range.")
@@ -411,20 +464,28 @@ class JobService:
                 f"{sanitize_filename(source.metadata.title)}.custom"
             )
             render_dir = job.output_dir / "render"
-            clip = await self.clip_engine.render(
-                source_video=source.source_artifacts.source_video,
-                transcript_segments=transcript.segments,
-                selection=selection,
-                output_dir=render_dir,
-                work_dir=self.work_root / job.job_id,
-                base_name=base_name,
+            clip = await self._run_stage(
+                job,
+                "candidate_clip_render",
+                lambda: self.clip_engine.render(
+                    source_video=source.source_artifacts.source_video,
+                    transcript_segments=transcript.segments,
+                    selection=selection,
+                    output_dir=render_dir,
+                    work_dir=self.work_root / job.job_id,
+                    base_name=base_name,
+                ),
             )
             metadata_path = render_dir / f"{base_name}.youtube-metadata.json"
-            await self.publish_engine.generate(
-                source_metadata=source.metadata,
-                summary=selection.summary,
-                transcript_excerpt=self._transcript_excerpt(transcript, selection),
-                destination=metadata_path,
+            await self._run_stage(
+                job,
+                "metadata_generation",
+                lambda: self.publish_engine.generate(
+                    source_metadata=source.metadata,
+                    summary=selection.summary,
+                    transcript_excerpt=self._transcript_excerpt(transcript, selection),
+                    destination=metadata_path,
+                ),
             )
             job.artifacts = RenderArtifacts(
                 traditional_chinese_srt=clip.traditional_chinese_srt.resolve(),
@@ -472,14 +533,53 @@ class JobService:
         get_job_logger(job.job_id, job.output_dir).info("%s: %s", job.status, job.message)
         self.writer.write_job(job)
 
-    def _remove_provisional_output(self, provisional_dir: Path) -> None:
+    async def _run_stage(
+        self,
+        job: AnalysisJob | DirectRenderJob,
+        stage: str,
+        operation: Callable[[], Awaitable[StageResult]],
+    ) -> StageResult:
+        logger = get_job_logger(job.job_id, job.output_dir)
+        started_at = perf_counter()
+        logger.info("stage_started stage=%s", stage)
+        try:
+            result = await operation()
+        except Exception:
+            logger.error(
+                "stage_failed stage=%s elapsed_seconds=%.3f",
+                stage,
+                perf_counter() - started_at,
+            )
+            raise
+        logger.info(
+            "stage_completed stage=%s elapsed_seconds=%.3f",
+            stage,
+            perf_counter() - started_at,
+        )
+        return result
+
+    def _finalize_provisional_output(
+        self,
+        provisional_dir: Path,
+        final_dir: Path,
+    ) -> None:
         resolved = provisional_dir.resolve()
         if resolved.parent != self.output_root or "_pending_" not in resolved.name:
             return
-        for filename in ("job_state.json", "pipeline.log"):
-            path = resolved / filename
-            if path.exists():
-                path.unlink()
+        final = final_dir.resolve()
+        final.mkdir(parents=True, exist_ok=True)
+        provisional_log = resolved / "pipeline.log"
+        final_log = final / "pipeline.log"
+        if provisional_log.exists():
+            if final_log.exists():
+                with final_log.open("a", encoding="utf-8") as destination:
+                    destination.write(provisional_log.read_text(encoding="utf-8"))
+                provisional_log.unlink()
+            else:
+                provisional_log.replace(final_log)
+        job_state = resolved / "job_state.json"
+        if job_state.exists():
+            job_state.unlink()
         if resolved.exists():
             resolved.rmdir()
 
