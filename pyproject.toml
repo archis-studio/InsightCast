@@ -39,6 +39,9 @@ packages = ["src/insightcast"]
 [tool.pytest.ini_options]
 addopts = "-ra"
 asyncio_mode = "auto"
+filterwarnings = [
+  "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+]
 pythonpath = ["src"]
 testpaths = ["tests"]
 
