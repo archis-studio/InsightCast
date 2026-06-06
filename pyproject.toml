@@ -1,6 +1,7 @@
 [build-system]
 requires = ["hatchling"]
-build-backend = "hatchling.build"
+build-backend = "build_backend"
+backend-path = ["."]
 
 [project]
 name = "insight-cast"
@@ -39,6 +40,10 @@ packages = ["src/insightcast"]
 [tool.pytest.ini_options]
 addopts = "-ra"
 asyncio_mode = "auto"
+filterwarnings = [
+  "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+]
+pythonpath = ["src"]
 testpaths = ["tests"]
 
 [tool.ruff]
@@ -47,4 +52,3 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-

@@ -1,0 +1,2 @@
+"""Versioned AI prompt contracts."""
+
