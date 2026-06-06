@@ -4,7 +4,54 @@
 
 Make analysis and render results easier to find while avoiding repeated YouTube
 downloads and audio extraction. Update burned bilingual subtitles so Traditional
-Chinese is the primary reading line.
+Chinese is the primary reading line. Make the default candidate count and
+candidate duration range configurable without removing per-request API overrides.
+
+## Configurable Candidate Defaults
+
+The server exposes these environment variables:
+
+```env
+DEFAULT_CANDIDATE_COUNT=2
+DEFAULT_MIN_DURATION_MINUTES=8
+DEFAULT_MAX_DURATION_MINUTES=12
+```
+
+Validation rules:
+
+- `DEFAULT_CANDIDATE_COUNT` is an integer from 1 through 26.
+- Both duration values are positive numbers.
+- `DEFAULT_MAX_DURATION_MINUTES` is greater than or equal to
+  `DEFAULT_MIN_DURATION_MINUTES`.
+
+Invalid defaults prevent application startup with a clear settings validation
+error.
+
+### API Override Semantics
+
+`POST /api/v1/analysis-jobs` keeps these request fields:
+
+- `candidate_count`
+- `min_duration_minutes`
+- `max_duration_minutes`
+
+Each field becomes optional. Resolution is field-by-field:
+
+1. A value explicitly supplied by the request is used.
+2. An omitted field uses its configured server default.
+
+Clients may override one field without resending all three. The final resolved
+duration range is validated after request values and server defaults are merged.
+For example, overriding only `min_duration_minutes` with a value above the
+configured maximum returns HTTP 422.
+
+Explicit JSON `null` is not accepted as an override. Clients must omit a field to
+use its server default. This distinguishes accidental nulls from intentional
+fallback behavior.
+
+OpenAPI describes the fields as optional overrides and does not present fixed
+schema defaults that could differ from the running server configuration. The
+queued job stores the fully resolved values for diagnostics and reproducibility.
 
 ## Output Structure
 
@@ -211,6 +258,11 @@ metadata.
 
 Unit tests cover:
 
+- candidate default settings, bounds, and duration relationship
+- omitted API fields use configured defaults
+- partial request overrides merge field-by-field
+- explicit null and invalid merged ranges are rejected
+- explicit request values override configured defaults
 - job directories under `outputs/jobs/`
 - cache paths keyed by normalized video ID
 - cache hit skips yt-dlp and FFmpeg
