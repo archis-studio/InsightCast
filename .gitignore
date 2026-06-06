@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 .venv/
+.superpowers/
 .work/
 .worktrees/
 worktrees/
@@ -26,4 +27,3 @@ models/
 *.webm
 *.srt
 *.ass
-
