@@ -11,6 +11,7 @@ def test_required_repository_files_and_console_script_exist() -> None:
     for relative_path in [
         ".gitignore",
         ".env.example",
+        ".python-version",
         "README.md",
         "build_backend.py",
         "pyproject.toml",
@@ -23,6 +24,9 @@ def test_required_repository_files_and_console_script_exist() -> None:
 
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["scripts"]["cast_api"] == "insightcast.api.app:run"
+    assert pyproject["project"]["requires-python"] == ">=3.13"
+    assert pyproject["tool"]["ruff"]["target-version"] == "py313"
+    assert (ROOT / ".python-version").read_text(encoding="utf-8").strip() == "3.13"
 
 
 def test_env_example_documents_every_settings_field() -> None:
@@ -61,7 +65,7 @@ def test_secrets_generated_outputs_caches_and_worktrees_are_ignored() -> None:
 def test_readme_documents_local_mvp_operations_without_docker_yet() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     required_text = [
-        "Python 3.12",
+        "Python 3.13",
         "uv sync",
         "uv run pytest",
         "uv run cast_api",
@@ -84,7 +88,7 @@ def test_docker_contract_uses_cpu_python_ffmpeg_non_root_and_documented_volume()
     dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "FROM python:3.12-slim" in dockerfile
+    assert "FROM python:3.13-slim" in dockerfile
     assert "ffmpeg" in dockerfile
     assert "fonts-noto-cjk" in dockerfile
     assert "USER app" in dockerfile
