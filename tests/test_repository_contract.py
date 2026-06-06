@@ -12,6 +12,7 @@ def test_required_repository_files_and_console_script_exist() -> None:
         ".gitignore",
         ".env.example",
         "README.md",
+        "build_backend.py",
         "pyproject.toml",
         "uv.lock",
         "src",
@@ -91,3 +92,19 @@ def test_git_does_not_track_secrets_or_generated_media() -> None:
     assert ".env" not in tracked
     assert all(not path.endswith((".mp3", ".mp4", ".ass", ".srt")) for path in tracked)
 
+
+def test_synced_virtualenv_can_import_installed_console_package() -> None:
+    python = ROOT / ".venv" / "bin" / "python"
+    result = subprocess.run(
+        [
+            str(python),
+            "-c",
+            "from insightcast.api.app import run; assert callable(run)",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
