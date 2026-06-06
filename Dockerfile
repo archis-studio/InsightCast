@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     API_PORT=8765
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 app
 
@@ -30,4 +30,3 @@ EXPOSE 8765
 VOLUME ["/app/outputs"]
 
 CMD ["uv", "run", "--no-sync", "cast_api"]
-

@@ -86,6 +86,7 @@ def test_docker_contract_uses_cpu_python_ffmpeg_non_root_and_documented_volume()
 
     assert "FROM python:3.12-slim" in dockerfile
     assert "ffmpeg" in dockerfile
+    assert "fonts-noto-cjk" in dockerfile
     assert "USER app" in dockerfile
     assert "EXPOSE 8765" in dockerfile
     assert 'CMD ["uv", "run", "--no-sync", "cast_api"]' in dockerfile

@@ -25,7 +25,10 @@ def test_settings_resolve_paths_and_fall_back_to_default_model(tmp_path: Path) -
     assert settings.effective_metadata_model == "gpt-metadata"
 
 
-@pytest.mark.parametrize("api_key", ["", "replace-me", "your-api-key", "sk-xxx"])
+@pytest.mark.parametrize(
+    "api_key",
+    ["", "replace-me", "your-api-key", "sk-xxx", "sk-your-api-key-here"],
+)
 def test_openai_provider_rejects_missing_or_placeholder_key(api_key: str) -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, openai_api_key=api_key)

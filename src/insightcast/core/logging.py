@@ -19,9 +19,15 @@ def get_job_logger(job_id: str, output_dir: Path) -> logging.Logger:
         if isinstance(handler, logging.FileHandler)
         and str(Path(handler.baseFilename).resolve()) == target_path
     ]
+    for existing_handler in list(logger.handlers):
+        if (
+            isinstance(existing_handler, logging.FileHandler)
+            and existing_handler not in matching_handlers
+        ):
+            logger.removeHandler(existing_handler)
+            existing_handler.close()
     if not matching_handlers:
         handler = logging.FileHandler(log_path, encoding="utf-8")
         handler.setFormatter(logging.Formatter(_LOG_FORMAT))
         logger.addHandler(handler)
     return logger
-

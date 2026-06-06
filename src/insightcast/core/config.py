@@ -63,14 +63,14 @@ class Settings(BaseSettings):
     def validate_openai_api_key(cls, value: str) -> str:
         stripped = value.strip()
         normalized = stripped.lower()
-        placeholders = {
-            "",
+        placeholder_markers = (
             "replace-me",
             "your-api-key",
             "your_openai_api_key",
             "sk-xxx",
-        }
-        if normalized in placeholders:
+            "placeholder",
+        )
+        if not normalized or any(marker in normalized for marker in placeholder_markers):
             raise ValueError("OPENAI_API_KEY is missing or is an obvious placeholder")
         return stripped
 
@@ -98,4 +98,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

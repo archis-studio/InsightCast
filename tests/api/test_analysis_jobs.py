@@ -124,3 +124,19 @@ def test_job_not_found_uses_stable_flat_error_shape(tmp_path: Path) -> None:
         "details": {},
     }
 
+
+def test_request_validation_error_is_json_serializable(tmp_path: Path) -> None:
+    client, _ = make_client(tmp_path)
+    with client:
+        response = client.post(
+            "/api/v1/analysis-jobs",
+            json={
+                "youtube_url": "https://youtu.be/abc123DEF_-",
+                "min_duration_minutes": 12,
+                "max_duration_minutes": 8,
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "INVALID_REQUEST"
+    assert response.json()["details"]["errors"]

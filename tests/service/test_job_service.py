@@ -19,6 +19,7 @@ from insightcast.engines.publish_engine import GeneratedYouTubeMetadata
 from insightcast.engines.source_engine import SourceResult
 from insightcast.infrastructure.ytdlp_client import YouTubeMetadata
 from insightcast.services.job_service import JobService, WorkKind
+from insightcast.storage.file_job_writer import FileJobWriter
 
 
 class Clock:
@@ -292,3 +293,56 @@ async def test_direct_render_is_unique_and_does_not_call_curator(tmp_path: Path)
     assert isinstance(first.artifacts, RenderArtifacts)
     assert all(item.kind == WorkKind.DIRECT_RENDER for item in service.processed_work[-2:])
 
+
+@pytest.mark.asyncio
+async def test_analysis_failure_writes_traceback_to_pipeline_log(tmp_path: Path) -> None:
+    class FailingSource:
+        async def ingest(self, **_kwargs: object) -> SourceResult:
+            raise RuntimeError("unexpected source failure")
+
+    service = JobService(
+        output_root=tmp_path / "outputs",
+        work_root=tmp_path / ".work",
+        source_engine=FailingSource(),
+        transcription_client=FakeTranscriber(),
+        curator_engine=FakeCurator(),
+        clip_engine=FakeClip(),
+        publish_engine=FakePublish(),
+        writer=FileJobWriter(),
+        clock=Clock(),
+        id_factory=IdFactory(),
+    )
+    job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+
+    await service.process(await service.queue.get())
+
+    log = (job.output_dir / "pipeline.log").read_text(encoding="utf-8")
+    assert "unexpected source failure" in log
+    assert "Traceback" in log
+
+
+@pytest.mark.asyncio
+async def test_analysis_removes_provisional_output_after_final_directory_is_known(
+    tmp_path: Path,
+) -> None:
+    service = JobService(
+        output_root=tmp_path / "outputs",
+        work_root=tmp_path / ".work",
+        source_engine=FakeSource(),
+        transcription_client=FakeTranscriber(),
+        curator_engine=FakeCurator(),
+        clip_engine=FakeClip(),
+        publish_engine=FakePublish(),
+        writer=FileJobWriter(),
+        clock=Clock(),
+        id_factory=IdFactory(),
+    )
+    job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+    provisional_dir = job.output_dir
+
+    await service.process(await service.queue.get())
+
+    assert job.output_dir != provisional_dir
+    assert not provisional_dir.exists()
+    log = (job.output_dir / "pipeline.log").read_text(encoding="utf-8")
+    assert "WAITING_SELECTION" in log

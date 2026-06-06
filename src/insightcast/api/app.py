@@ -5,6 +5,7 @@ from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from openai import OpenAI
@@ -151,11 +152,14 @@ def create_app(
     ) -> JSONResponse:
         return JSONResponse(
             status_code=422,
-            content={
-                "error_code": "INVALID_REQUEST",
-                "message": "Request validation failed.",
-                "details": {"errors": exc.errors()},
-            },
+            content=jsonable_encoder(
+                {
+                    "error_code": "INVALID_REQUEST",
+                    "message": "Request validation failed.",
+                    "details": {"errors": exc.errors()},
+                },
+                custom_encoder={Exception: str},
+            ),
         )
 
     app.include_router(health.router)
@@ -171,4 +175,3 @@ def run() -> None:
         host=settings.api_host,
         port=settings.api_port,
     )
-

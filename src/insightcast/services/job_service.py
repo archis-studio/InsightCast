@@ -8,6 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from insightcast.core.exceptions import InsightCastError
+from insightcast.core.logging import get_job_logger
 from insightcast.domain.enums import ErrorCode, JobStatus, JobType
 from insightcast.domain.models import (
     AnalysisJob,
@@ -116,6 +117,7 @@ class JobService:
             min_duration_minutes,
             max_duration_minutes,
         )
+        get_job_logger(job.job_id, job.output_dir).info("%s: %s", job.status, job.message)
         self.writer.write_job(job)
         await self.queue.put(WorkItem(kind=WorkKind.ANALYSIS, job_id=job_id))
         return job
@@ -220,6 +222,7 @@ class JobService:
             updated_at=created_at,
         )
         self.direct_jobs[job_id] = job
+        get_job_logger(job.job_id, job.output_dir).info("%s: %s", job.status, job.message)
         self.writer.write_job(job)
         await self.queue.put(WorkItem(kind=WorkKind.DIRECT_RENDER, job_id=job_id))
         return job
@@ -251,7 +254,9 @@ class JobService:
                 output_root=self.output_root,
                 direct=False,
             )
+            provisional_output_dir = job.output_dir
             job.output_dir = source.output_dir
+            self._remove_provisional_output(provisional_output_dir)
             job.source_artifacts = source.source_artifacts
             self._source_metadata[job_id] = source.metadata
             self._set_status(job, JobStatus.TRANSCRIBING, "Transcribing English audio.")
@@ -282,8 +287,15 @@ class JobService:
                 f"{len(job.candidates)} candidates are ready for selection.",
             )
         except InsightCastError as exc:
+            get_job_logger(job.job_id, job.output_dir).exception(
+                "Analysis pipeline failed with %s",
+                exc.error_code,
+            )
             self._fail_job(job, exc)
         except Exception as exc:
+            get_job_logger(job.job_id, job.output_dir).exception(
+                "Unexpected analysis pipeline failure"
+            )
             self._fail_job(
                 job,
                 InsightCastError(
@@ -341,6 +353,10 @@ class JobService:
                     ),
                 )
             except Exception as exc:
+                get_job_logger(job.job_id, job.output_dir).exception(
+                    "Candidate %s render failed",
+                    candidate_id,
+                )
                 error = self._as_job_error(exc, "rendering")
                 batch.candidate_results[candidate_id] = CandidateRenderResult(
                     candidate_id=candidate_id,
@@ -373,7 +389,9 @@ class JobService:
                 output_root=self.output_root,
                 direct=True,
             )
+            provisional_output_dir = job.output_dir
             job.output_dir = source.output_dir
+            self._remove_provisional_output(provisional_output_dir)
             job.source_artifacts = source.source_artifacts
             self._set_status(job, JobStatus.TRANSCRIBING, "Transcribing English audio.")
             transcript = await self.transcription_client.transcribe(
@@ -420,8 +438,15 @@ class JobService:
                 "Direct render completed successfully.",
             )
         except InsightCastError as exc:
+            get_job_logger(job.job_id, job.output_dir).exception(
+                "Direct render pipeline failed with %s",
+                exc.error_code,
+            )
             self._fail_job(job, exc)
         except Exception as exc:
+            get_job_logger(job.job_id, job.output_dir).exception(
+                "Unexpected direct render pipeline failure"
+            )
             self._fail_job(
                 job,
                 InsightCastError(
@@ -444,7 +469,19 @@ class JobService:
 
     def _touch(self, job: AnalysisJob | DirectRenderJob) -> None:
         job.updated_at = self.clock()
+        get_job_logger(job.job_id, job.output_dir).info("%s: %s", job.status, job.message)
         self.writer.write_job(job)
+
+    def _remove_provisional_output(self, provisional_dir: Path) -> None:
+        resolved = provisional_dir.resolve()
+        if resolved.parent != self.output_root or "_pending_" not in resolved.name:
+            return
+        for filename in ("job_state.json", "pipeline.log"):
+            path = resolved / filename
+            if path.exists():
+                path.unlink()
+        if resolved.exists():
+            resolved.rmdir()
 
     def _fail_job(
         self,
