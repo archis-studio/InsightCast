@@ -4,6 +4,8 @@ from insightcast.utils.files import (
     build_analysis_job_dir_name,
     build_direct_job_dir_name,
     build_render_dir_name,
+    build_run_id,
+    build_video_dir_name,
     sanitize_filename,
 )
 
@@ -29,3 +31,13 @@ def test_output_directory_names_include_timestamp_title_kind_and_short_id() -> N
         == "20260606-143000_video-title_direct_d4e5f6"
     )
     assert build_render_dir_name(now, "render123") == "20260606-143000-render"
+
+
+def test_video_directory_name_uses_validated_id_and_sanitized_title() -> None:
+    assert build_video_dir_name("abc123DEF_-", "A Useful / Talk") == "abc123DEF_-_a-useful-talk"
+
+
+def test_run_id_uses_utc_timestamp_and_short_unique_id() -> None:
+    created_at = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
+
+    assert build_run_id(created_at, "abcdef1234") == "20260607-120000-abcdef"

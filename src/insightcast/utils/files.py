@@ -2,6 +2,8 @@ import re
 import unicodedata
 from datetime import datetime
 
+from insightcast.utils.youtube import validate_youtube_video_id
+
 _SEPARATOR_PATTERN = re.compile(r"[-\s]+")
 
 
@@ -33,3 +35,11 @@ def build_direct_job_dir_name(title: str, job_id: str, created_at: datetime) -> 
 
 def build_render_dir_name(created_at: datetime, render_id: str) -> str:
     return f"{_timestamp(created_at)}-{render_id[:6]}"
+
+
+def build_video_dir_name(video_id: str, title: str) -> str:
+    return f"{validate_youtube_video_id(video_id)}_{sanitize_filename(title)}"
+
+
+def build_run_id(created_at: datetime, unique_id: str) -> str:
+    return f"{_timestamp(created_at)}-{unique_id[:6]}"
