@@ -1,5 +1,7 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 
@@ -69,6 +71,20 @@ def test_find_video_returns_none_when_managed_root_is_missing(tmp_path: Path) ->
     assert store.find_video(VIDEO_ID) is None
 
 
+def test_matching_video_roots_ignores_external_directory_symlink(tmp_path: Path) -> None:
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    external = tmp_path / f"{VIDEO_ID}_external"
+    external.mkdir()
+    store.videos_root.mkdir(parents=True)
+    (store.videos_root / f"{VIDEO_ID}_linked").symlink_to(
+        external,
+        target_is_directory=True,
+    )
+
+    assert store.matching_video_roots(VIDEO_ID) == []
+    assert store.find_video(VIDEO_ID) is None
+
+
 def test_video_store_reuses_root_by_video_id_when_title_changes(tmp_path: Path) -> None:
     store = VideoStore(tmp_path / "outputs", FileJobWriter())
 
@@ -111,6 +127,23 @@ def test_find_video_returns_typed_entry_for_one_root(tmp_path: Path) -> None:
     assert found.manifest == created.manifest
 
 
+def test_find_video_rejects_manifest_identity_mismatch(tmp_path: Path) -> None:
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    created = store.ensure_video(metadata(), ORIGINAL_URL)
+    payload = json.loads((created.root / "video.json").read_text(encoding="utf-8"))
+    payload["video_id"] = "different01"
+    (created.root / "video.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(InsightCastError) as error:
+        store.find_video(VIDEO_ID)
+
+    assert error.value.error_code == ErrorCode.MANIFEST_INVALID
+    assert error.value.details == {
+        "manifest_path": str((created.root / "video.json").resolve()),
+        "reason": "video_id_mismatch",
+    }
+
+
 def test_video_store_rejects_duplicate_video_roots(tmp_path: Path) -> None:
     videos = tmp_path / "outputs" / "videos"
     (videos / f"{VIDEO_ID}_one").mkdir(parents=True)
@@ -122,6 +155,51 @@ def test_video_store_rejects_duplicate_video_roots(tmp_path: Path) -> None:
     assert error.value.error_code == ErrorCode.STORAGE_CONFLICT
     assert error.value.details["video_id"] == VIDEO_ID
     assert len(error.value.details["roots"]) == 2
+
+
+def test_concurrent_first_creation_uses_one_video_root(tmp_path: Path) -> None:
+    output_root = tmp_path / "outputs"
+    barrier = Barrier(2)
+
+    def create(title: str) -> Path:
+        store = VideoStore(output_root, FileJobWriter())
+        barrier.wait()
+        return store.ensure_video(metadata(title=title), ORIGINAL_URL).root
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        roots = list(executor.map(create, ["First Title", "Second Title"]))
+
+    assert roots[0] == roots[1]
+    assert len(VideoStore(output_root, FileJobWriter()).matching_video_roots(VIDEO_ID)) == 1
+
+
+def test_failed_initial_manifest_write_leaves_no_root_and_retry_succeeds(
+    tmp_path: Path,
+) -> None:
+    class FailOnceWriter(FileJobWriter):
+        def __init__(self) -> None:
+            self.failed = False
+
+        def write_json(self, path: Path, payload: object) -> Path:
+            if not self.failed:
+                self.failed = True
+                super().write_json(path, payload)
+                raise OSError("injected write failure")
+            return super().write_json(path, payload)
+
+    writer = FailOnceWriter()
+    store = VideoStore(tmp_path / "outputs", writer)
+
+    with pytest.raises(OSError, match="injected write failure"):
+        store.ensure_video(metadata(), ORIGINAL_URL)
+
+    assert store.matching_video_roots(VIDEO_ID) == []
+    assert list(store.videos_root.glob(f".{VIDEO_ID}-*.tmp")) == []
+
+    retried = store.ensure_video(metadata(), ORIGINAL_URL)
+    assert retried.root.is_dir()
+    assert (retried.root / "video.json").is_file()
+    assert store.find_video(VIDEO_ID) == retried
 
 
 @pytest.mark.parametrize(

@@ -1,7 +1,12 @@
+import fcntl
 import json
+import shutil
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeVar
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -38,14 +43,24 @@ class VideoStore:
         prefix = f"{validate_youtube_video_id(video_id)}_"
         if not self.videos_root.exists():
             return []
-        return sorted(
-            path.resolve()
-            for path in self.videos_root.iterdir()
-            if path.is_dir() and path.name.startswith(prefix)
-        )
+        resolved_videos_root = self.videos_root.resolve()
+        roots: list[Path] = []
+        for path in self.videos_root.iterdir():
+            if (
+                not path.name.startswith(prefix)
+                or path.is_symlink()
+                or not path.is_dir()
+            ):
+                continue
+            resolved = path.resolve()
+            if resolved_videos_root not in resolved.parents:
+                continue
+            roots.append(resolved)
+        return sorted(roots)
 
     def find_video(self, video_id: str) -> VideoEntry | None:
-        roots = self.matching_video_roots(video_id)
+        validated_video_id = validate_youtube_video_id(video_id)
+        roots = self.matching_video_roots(validated_video_id)
         if not roots:
             return None
         if len(roots) > 1:
@@ -58,9 +73,13 @@ class VideoStore:
                 },
             )
         root = roots[0]
+        manifest_path = root / "video.json"
+        manifest = self.read_manifest(manifest_path, VideoManifest)
+        if manifest.video_id != validated_video_id:
+            raise self._invalid_manifest(manifest_path, "video_id_mismatch")
         return VideoEntry(
             root=root,
-            manifest=self.read_manifest(root / "video.json", VideoManifest),
+            manifest=manifest,
         )
 
     def ensure_video(
@@ -69,29 +88,28 @@ class VideoStore:
         original_url: str,
     ) -> VideoEntry:
         video_id = validate_youtube_video_id(metadata.video_id)
-        existing = self.find_video(video_id)
-        now = datetime.now(UTC)
-        if existing is None:
-            root = self.videos_root / build_video_dir_name(video_id, metadata.title)
-            root.mkdir(parents=True)
-            first_seen_at = now
-        else:
-            root = existing.root
-            first_seen_at = existing.manifest.first_seen_at
-
-        manifest = VideoManifest(
-            video_id=video_id,
-            original_youtube_url=original_url,
-            normalized_youtube_url=normalize_youtube_url(original_url),
-            title=metadata.title,
-            uploader=metadata.uploader,
-            upload_date=metadata.upload_date,
-            first_seen_at=first_seen_at,
-            last_seen_at=now,
-            source_manifest_path=Path("source/manifest.json"),
-        )
-        self.writer.write_json(root / "video.json", manifest)
-        return VideoEntry(root=root.resolve(), manifest=manifest)
+        normalized_url = normalize_youtube_url(original_url)
+        with self._video_lock(video_id):
+            existing = self.find_video(video_id)
+            now = datetime.now(UTC)
+            first_seen_at = (
+                now if existing is None else existing.manifest.first_seen_at
+            )
+            manifest = VideoManifest(
+                video_id=video_id,
+                original_youtube_url=original_url,
+                normalized_youtube_url=normalized_url,
+                title=metadata.title,
+                uploader=metadata.uploader,
+                upload_date=metadata.upload_date,
+                first_seen_at=first_seen_at,
+                last_seen_at=now,
+                source_manifest_path=Path("source/manifest.json"),
+            )
+            if existing is not None:
+                self.writer.write_json(existing.root / "video.json", manifest)
+                return VideoEntry(root=existing.root, manifest=manifest)
+            return self._create_video_root(video_id, metadata.title, manifest)
 
     def resolve_relative(self, owner: Path, relative: Path) -> Path:
         try:
@@ -130,6 +148,36 @@ class VideoStore:
             return model_type.model_validate_json(raw)
         except (ValidationError, TypeError, ValueError) as exc:
             raise self._invalid_manifest(resolved, "validation") from exc
+
+    def _create_video_root(
+        self,
+        video_id: str,
+        title: str,
+        manifest: VideoManifest,
+    ) -> VideoEntry:
+        root = self.videos_root / build_video_dir_name(video_id, title)
+        staging = self.videos_root / f".{video_id}-{uuid4().hex}.tmp"
+        staging.mkdir()
+        try:
+            self.writer.write_json(staging / "video.json", manifest)
+            staging.replace(root)
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        return VideoEntry(root=root.resolve(), manifest=manifest)
+
+    @contextmanager
+    def _video_lock(self, video_id: str) -> Iterator[None]:
+        self.videos_root.mkdir(parents=True, exist_ok=True)
+        locks_root = self.videos_root / ".locks"
+        locks_root.mkdir(exist_ok=True)
+        lock_path = locks_root / f"{video_id}.lock"
+        with lock_path.open("a+b") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     @staticmethod
     def _invalid_artifact(relative: Path) -> InsightCastError:

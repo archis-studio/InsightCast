@@ -1,6 +1,10 @@
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
+
+import pytest
 
 from insightcast.core.logging import get_job_logger
 from insightcast.domain.enums import JobStatus, JobType
@@ -44,6 +48,46 @@ def test_write_json_replaces_existing_content_and_preserves_unicode(tmp_path: Pa
     writer.write_json(path, {"title": "新標題"})
 
     assert json.loads(path.read_text(encoding="utf-8")) == {"title": "新標題"}
+
+
+def test_concurrent_write_json_produces_one_complete_payload(tmp_path: Path) -> None:
+    path = tmp_path / "artifacts" / "metadata.json"
+    payloads = [
+        {"writer": index, "content": str(index) * 100_000}
+        for index in range(8)
+    ]
+    barrier = Barrier(len(payloads))
+
+    def write(payload: dict[str, object]) -> None:
+        barrier.wait()
+        FileJobWriter().write_json(path, payload)
+
+    with ThreadPoolExecutor(max_workers=len(payloads)) as executor:
+        list(executor.map(write, payloads))
+
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted in payloads
+    assert list(path.parent.glob(f".{path.name}.*.tmp")) == []
+
+
+def test_write_json_cleans_own_temporary_file_when_replace_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "artifacts" / "metadata.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"existing": true}\n', encoding="utf-8")
+
+    def fail_replace(self: Path, target: Path) -> Path:
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="injected replace failure"):
+        FileJobWriter().write_json(path, {"replacement": True})
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {"existing": True}
+    assert list(path.parent.glob(f".{path.name}.*.tmp")) == []
 
 
 def test_get_job_logger_writes_one_pipeline_log_without_duplicate_handlers(
