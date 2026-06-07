@@ -62,6 +62,7 @@ def transcript_values(**updates: Any) -> dict[str, Any]:
         "provider": "openai",
         "model": "whisper-1",
         "language": "en",
+        "transcript_schema_version": 1,
         "transcript_path": Path("transcripts/transcript-1/transcript.json"),
         "created_at": NOW,
         "state": ManifestState.READY,

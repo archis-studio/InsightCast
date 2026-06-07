@@ -485,7 +485,11 @@ class VideoStore:
             )
             if existing is not None:
                 return existing
-            transcript_id = self._transcript_id_for_cache_key(transcripts_root, cache_key)
+            transcript_id = self._transcript_id_for_cache_key(
+                video,
+                transcripts_root,
+                cache_key,
+            )
             target = transcripts_root / transcript_id
             staging = transcripts_root / f".{transcript_id}-{uuid4().hex}.tmp"
             manifest = TranscriptManifest(
@@ -495,6 +499,7 @@ class VideoStore:
                 provider=spec.provider,
                 model=spec.model,
                 language=spec.language,
+                transcript_schema_version=spec.transcript_schema_version,
                 transcript_path=Path("transcripts") / transcript_id / "transcript.json",
                 created_at=created_at or datetime.now(UTC),
                 state=ManifestState.READY,
@@ -764,7 +769,7 @@ class VideoStore:
             and manifest.provider == spec.provider
             and manifest.model == spec.model
             and manifest.language == spec.language
-            and spec.transcript_schema_version == 1
+            and manifest.transcript_schema_version == spec.transcript_schema_version
         )
 
     @classmethod
@@ -777,12 +782,13 @@ class VideoStore:
             provider=manifest.provider,
             model=manifest.model,
             language=manifest.language,
-            transcript_schema_version=1,
+            transcript_schema_version=manifest.transcript_schema_version,
         )
         return build_transcript_cache_key(spec).lower() == manifest.cache_key.lower()
 
     def _transcript_id_for_cache_key(
         self,
+        video: VideoEntry,
         transcripts_root: Path,
         cache_key: str,
     ) -> str:
@@ -802,7 +808,10 @@ class VideoStore:
                 suffix += 1
                 continue
             if manifest.cache_key.lower() == cache_key.lower():
-                return transcript_id
+                if self._validate_transcript_directory(video, candidate) is not None:
+                    return transcript_id
+                suffix += 1
+                continue
             suffix += 1
 
     @staticmethod

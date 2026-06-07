@@ -131,6 +131,7 @@ class TranscriptManifest(ManifestModel):
     provider: str
     model: str
     language: str
+    transcript_schema_version: int = Field(ge=1)
     transcript_path: RelativePath
     created_at: AwareDatetime
     state: ManifestState

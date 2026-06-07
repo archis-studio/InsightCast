@@ -247,6 +247,61 @@ def test_video_store_write_transcript_returns_existing_ready_without_replacing(
     assert found.transcript.segments[0].text == "Original"
 
 
+def test_video_store_write_transcript_skips_invalid_matching_key_directory(
+    tmp_path: Path,
+) -> None:
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    store.ensure_video(metadata(), ORIGINAL_URL)
+    spec = transcription_spec()
+    first = store.write_transcript(VIDEO_ID, spec, transcript("Original"))
+    first.transcript_path.unlink()
+
+    second = store.write_transcript(VIDEO_ID, spec, transcript("Replacement"))
+
+    assert first.directory.is_dir()
+    assert not first.transcript_path.exists()
+    assert second.directory != first.directory
+    assert second.manifest.transcript_id == f"{first.manifest.transcript_id}-1"
+    assert second.manifest.cache_key == first.manifest.cache_key
+    assert second.transcript.segments[0].text == "Replacement"
+    assert store.find_ready_transcript(VIDEO_ID, spec) == second
+
+
+def test_video_store_write_transcript_skips_corrupt_matching_key_directory(
+    tmp_path: Path,
+) -> None:
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    store.ensure_video(metadata(), ORIGINAL_URL)
+    spec = transcription_spec()
+    first = store.write_transcript(VIDEO_ID, spec, transcript("Original"))
+    first.transcript_path.write_text("{bad json", encoding="utf-8")
+
+    second = store.write_transcript(VIDEO_ID, spec, transcript("Replacement"))
+
+    assert first.directory.is_dir()
+    assert first.transcript_path.read_text(encoding="utf-8") == "{bad json"
+    assert second.directory != first.directory
+    assert second.manifest.transcript_id == f"{first.manifest.transcript_id}-1"
+    assert store.find_ready_transcript(VIDEO_ID, spec) == second
+
+
+def test_video_store_persists_and_matches_transcript_schema_version(
+    tmp_path: Path,
+) -> None:
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    store.ensure_video(metadata(), ORIGINAL_URL)
+    version_one = transcription_spec()
+    version_two = transcription_spec(transcript_schema_version=2)
+
+    first = store.write_transcript(VIDEO_ID, version_one, transcript("Version one"))
+    second = store.write_transcript(VIDEO_ID, version_two, transcript("Version two"))
+
+    assert first.manifest.cache_key != second.manifest.cache_key
+    assert second.manifest.transcript_schema_version == 2
+    assert store.find_ready_transcript(VIDEO_ID, version_two) == second
+    assert store.find_ready_transcript(VIDEO_ID, version_one) == first
+
+
 def test_find_ready_transcript_skips_manifest_with_matching_key_but_mismatched_identity(
     tmp_path: Path,
 ) -> None:
@@ -335,6 +390,7 @@ def test_video_store_lists_transcripts_and_skips_corrupt_or_missing_entries(
             provider="openai",
             model="whisper-1",
             language="en",
+            transcript_schema_version=1,
             transcript_path=Path("transcripts/tx-missing/transcript.json"),
             created_at=ready.manifest.created_at,
             state=ManifestState.READY,
