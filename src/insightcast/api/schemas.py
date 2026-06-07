@@ -12,28 +12,32 @@ class ApiModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+def _omitted_override() -> Any:
+    return None
+
+
 class AnalysisJobCreateRequest(ApiModel):
     youtube_url: str = Field(
         description="YouTube watch, share, embed, or Shorts URL.",
         examples=["https://www.youtube.com/watch?v=abc123DEF_-"],
     )
     candidate_count: int = Field(
-        default=2,
+        default_factory=_omitted_override,
         ge=1,
         le=26,
-        description="Exact number of valid candidates required.",
+        description="Optional override for the configured candidate count.",
         examples=[2],
     )
     min_duration_minutes: float = Field(
-        default=8,
+        default_factory=_omitted_override,
         gt=0,
-        description="Minimum duration for every candidate.",
+        description="Optional override for the configured minimum candidate duration.",
         examples=[8],
     )
     max_duration_minutes: float = Field(
-        default=12,
+        default_factory=_omitted_override,
         gt=0,
-        description="Maximum duration for every candidate.",
+        description="Optional override for the configured maximum candidate duration.",
         examples=[12],
     )
     force_reanalyze: bool = Field(
@@ -42,8 +46,13 @@ class AnalysisJobCreateRequest(ApiModel):
         examples=[False],
     )
 
+class ResolvedCandidateOptions(ApiModel):
+    candidate_count: int = Field(ge=1, le=26)
+    min_duration_minutes: float = Field(gt=0)
+    max_duration_minutes: float = Field(gt=0)
+
     @model_validator(mode="after")
-    def validate_duration_range(self) -> "AnalysisJobCreateRequest":
+    def validate_duration_range(self) -> "ResolvedCandidateOptions":
         if self.max_duration_minutes < self.min_duration_minutes:
             raise ValueError("max_duration_minutes must be at least min_duration_minutes")
         return self
@@ -141,4 +150,3 @@ class DirectRenderJobResponse(ApiModel):
     artifacts: dict[str, Any]
     created_at: datetime
     updated_at: datetime
-

@@ -3,7 +3,6 @@ import json
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -18,7 +17,7 @@ def _run_process(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 class YouTubeMetadata(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     video_id: str
     title: str
@@ -28,7 +27,6 @@ class YouTubeMetadata(BaseModel):
     upload_date: str | None = None
     webpage_url: str
     tags: list[str] = Field(default_factory=list)
-    raw: dict[str, Any] = Field(default_factory=dict)
 
 
 class YtDlpClient:
@@ -63,7 +61,6 @@ class YtDlpClient:
                 upload_date=payload.get("upload_date"),
                 webpage_url=payload.get("webpage_url") or youtube_url,
                 tags=payload.get("tags") or [],
-                raw=payload,
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise InsightCastError(
@@ -115,4 +112,3 @@ class YtDlpClient:
                 stage="ingesting",
             )
         return result
-

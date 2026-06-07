@@ -22,7 +22,7 @@ from insightcast.domain.models import (
     RenderBatch,
     Transcript,
 )
-from insightcast.utils.files import sanitize_filename
+from insightcast.utils.files import build_render_dir_name, sanitize_filename
 from insightcast.utils.youtube import normalize_youtube_url
 
 StageResult = TypeVar("StageResult")
@@ -99,7 +99,7 @@ class JobService:
             return self.analysis_jobs[self.latest_analysis_by_url[normalized_url]]
         job_id = self.id_factory()
         created_at = self.clock()
-        output_dir = self.output_root / (
+        output_dir = self.output_root / "jobs" / (
             f"{created_at:%Y%m%d-%H%M%S}_pending_{job_id[:6]}"
         )
         job = AnalysisJob(
@@ -110,6 +110,9 @@ class JobService:
             status=JobStatus.QUEUED,
             message="Analysis job is queued.",
             output_dir=output_dir,
+            candidate_count=candidate_count,
+            min_duration_minutes=min_duration_minutes,
+            max_duration_minutes=max_duration_minutes,
             created_at=created_at,
             updated_at=created_at,
         )
@@ -174,8 +177,9 @@ class JobService:
 
         render_id = self.id_factory()
         created_at = self.clock()
-        output_dir = job.output_dir / "renders" / (
-            f"{created_at:%Y%m%d-%H%M%S}-{created_at.microsecond:06d}"
+        output_dir = job.output_dir / "renders" / build_render_dir_name(
+            created_at,
+            render_id,
         )
         batch = RenderBatch(
             render_id=render_id,
@@ -226,7 +230,7 @@ class JobService:
         normalized_url = normalize_youtube_url(youtube_url)
         job_id = self.id_factory()
         created_at = self.clock()
-        output_dir = self.output_root / (
+        output_dir = self.output_root / "jobs" / (
             f"{created_at:%Y%m%d-%H%M%S}_pending_direct_{job_id[:6]}"
         )
         job = DirectRenderJob(
@@ -283,6 +287,7 @@ class JobService:
             job.output_dir = source.output_dir
             self._finalize_provisional_output(provisional_output_dir, job.output_dir)
             job.source_artifacts = source.source_artifacts
+            self._log_source_cache(job, source)
             self._source_metadata[job_id] = source.metadata
             self._set_status(job, JobStatus.TRANSCRIBING, "Transcribing English audio.")
             transcript = await self._run_stage(
@@ -360,6 +365,16 @@ class JobService:
             source_base = job.source_artifacts.source_video.stem.removesuffix(".source")
             base_name = f"{source_base}.{candidate_id.lower()}"
             try:
+                if not job.source_artifacts.source_video.is_file():
+                    raise InsightCastError(
+                        ErrorCode.SOURCE_CACHE_MISSING,
+                        "The cached source video required for rendering is missing.",
+                        details={
+                            "job_id": job.job_id,
+                            "source_video": str(job.source_artifacts.source_video),
+                        },
+                        stage="rendering",
+                    )
                 clip = await self._run_stage(
                     job,
                     "candidate_clip_render",
@@ -442,6 +457,7 @@ class JobService:
             job.output_dir = source.output_dir
             self._finalize_provisional_output(provisional_output_dir, job.output_dir)
             job.source_artifacts = source.source_artifacts
+            self._log_source_cache(job, source)
             self._set_status(job, JobStatus.TRANSCRIBING, "Transcribing English audio.")
             transcript = await self._run_stage(
                 job,
@@ -533,6 +549,19 @@ class JobService:
         get_job_logger(job.job_id, job.output_dir).info("%s: %s", job.status, job.message)
         self.writer.write_job(job)
 
+    @staticmethod
+    def _log_source_cache(
+        job: AnalysisJob | DirectRenderJob,
+        source: Any,
+    ) -> None:
+        get_job_logger(job.job_id, job.output_dir).info(
+            "source_cache_%s video_id=%s source=%s audio=%s",
+            source.cache_decision,
+            source.metadata.video_id,
+            source.source_artifacts.source_video,
+            source.source_artifacts.source_audio,
+        )
+
     async def _run_stage(
         self,
         job: AnalysisJob | DirectRenderJob,
@@ -564,7 +593,8 @@ class JobService:
         final_dir: Path,
     ) -> None:
         resolved = provisional_dir.resolve()
-        if resolved.parent != self.output_root or "_pending_" not in resolved.name:
+        jobs_root = (self.output_root / "jobs").resolve()
+        if resolved.parent != jobs_root or "_pending_" not in resolved.name:
             return
         final = final_dir.resolve()
         final.mkdir(parents=True, exist_ok=True)

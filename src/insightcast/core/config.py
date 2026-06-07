@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,6 +37,18 @@ class Settings(BaseSettings):
     video_crf: int = Field(default=18, ge=0, le=51)
     openai_timeout_seconds: float = Field(default=120, gt=0)
     openai_max_retries: int = Field(default=2, ge=0, le=10)
+    default_candidate_count: int = Field(default=2, ge=1, le=26)
+    default_min_duration_minutes: float = Field(default=8, gt=0)
+    default_max_duration_minutes: float = Field(default=12, gt=0)
+
+    @model_validator(mode="after")
+    def validate_candidate_duration_defaults(self) -> "Settings":
+        if self.default_max_duration_minutes < self.default_min_duration_minutes:
+            raise ValueError(
+                "DEFAULT_MAX_DURATION_MINUTES must be at least "
+                "DEFAULT_MIN_DURATION_MINUTES"
+            )
+        return self
 
     @field_validator("output_dir", "work_dir")
     @classmethod

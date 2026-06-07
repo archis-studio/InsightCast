@@ -67,3 +67,23 @@ def test_prepare_subtitle_items_rejects_translation_mapping_mismatches(
 
     assert exc_info.value.error_code == ErrorCode.SUBTITLE_GENERATION_FAILED
 
+
+@pytest.mark.parametrize("text", ["", "   ", ".", "？！", "...？！"])
+def test_prepare_subtitle_items_rejects_empty_or_punctuation_only_translation(
+    text: str,
+) -> None:
+    segments = [
+        TranscriptSegment(segment_id="s1", start_seconds=0, end_seconds=2, text="Hello")
+    ]
+    translation = TranslationItem.model_construct(segment_id="s1", text=text)
+
+    with pytest.raises(InsightCastError) as exc_info:
+        LingoEngine().prepare_subtitle_items(
+            segments=segments,
+            translations=[translation],
+            clip_start_seconds=0,
+            clip_end_seconds=2,
+        )
+
+    assert exc_info.value.error_code == ErrorCode.SUBTITLE_GENERATION_FAILED
+    assert exc_info.value.details["segment_id"] == "s1"

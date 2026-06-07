@@ -101,6 +101,14 @@ class LingoEngine:
 
         items: list[SubtitleItem] = []
         for segment, translation in zip(selected, translations, strict=True):
+            translated_text = translation.text.strip()
+            if not translated_text or not any(
+                character.isalnum() for character in translated_text
+            ):
+                raise self._generation_error(
+                    "Translation must contain readable text.",
+                    segment_id=segment.segment_id,
+                )
             absolute_start = max(segment.start_seconds, clip_start_seconds)
             absolute_end = min(segment.end_seconds, clip_end_seconds)
             items.append(
@@ -109,7 +117,7 @@ class LingoEngine:
                     start_seconds=absolute_start - clip_start_seconds,
                     end_seconds=absolute_end - clip_start_seconds,
                     english_text=segment.text,
-                    traditional_chinese_text=translation.text,
+                    traditional_chinese_text=translated_text,
                 )
             )
         return items

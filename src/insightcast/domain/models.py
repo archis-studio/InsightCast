@@ -108,6 +108,9 @@ class BaseJob(DomainModel):
 
 
 class AnalysisJob(BaseJob):
+    candidate_count: int = Field(default=2, ge=1, le=26)
+    min_duration_minutes: float = Field(default=8, gt=0)
+    max_duration_minutes: float = Field(default=12, gt=0)
     candidates: list[Candidate] = Field(default_factory=list)
     render_batches: list[RenderBatch] = Field(default_factory=list)
 
@@ -142,4 +145,3 @@ class CandidateSelectionRequest(DomainModel):
             if candidate_id not in normalized:
                 normalized.append(candidate_id)
         return normalized
-

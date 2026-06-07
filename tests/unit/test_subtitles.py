@@ -44,7 +44,18 @@ def test_serialize_bilingual_ass_has_styles_escaped_text_and_stable_events() -> 
     assert "PlayResX: 1920" in output
     assert "Style: English" in output
     assert "Style: TraditionalChinese" in output
+    assert output.index("Style: TraditionalChinese") < output.index("Style: English")
+    chinese_style = next(
+        line for line in output.splitlines() if line.startswith("Style: TraditionalChinese")
+    )
+    english_style = next(
+        line for line in output.splitlines() if line.startswith("Style: English")
+    )
+    assert "&H0082E0FF" in chinese_style
+    assert int(chinese_style.split(",")[-2]) > int(english_style.split(",")[-2])
     assert "Dialogue: 0,0:00:01.00,0:00:03.46,English" in output
+    assert output.index(
+        "Dialogue: 1,0:00:01.00,0:00:03.46,TraditionalChinese"
+    ) < output.index("Dialogue: 0,0:00:01.00,0:00:03.46,English")
     assert r"Use \{braces\}\\nand newline" in output
     assert r"使用\{括號\}\N以及換行" in output
-
