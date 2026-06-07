@@ -45,6 +45,20 @@ def test_local_provider_is_supported_with_openai_key_for_text_engines() -> None:
     assert settings.transcription_provider == "local"
 
 
+def test_candidate_defaults_are_configurable() -> None:
+    settings = Settings(
+        _env_file=None,
+        openai_api_key="sk-test-value",
+        default_candidate_count=4,
+        default_min_duration_minutes=6.5,
+        default_max_duration_minutes=9,
+    )
+
+    assert settings.default_candidate_count == 4
+    assert settings.default_min_duration_minutes == 6.5
+    assert settings.default_max_duration_minutes == 9
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -54,6 +68,10 @@ def test_local_provider_is_supported_with_openai_key_for_text_engines() -> None:
         ("video_crf", 52),
         ("video_max_height", 0),
         ("llm_model", ""),
+        ("default_candidate_count", 0),
+        ("default_candidate_count", 27),
+        ("default_min_duration_minutes", 0),
+        ("default_max_duration_minutes", 0),
     ],
 )
 def test_settings_reject_invalid_ranges_and_empty_models(field: str, value: object) -> None:
@@ -61,3 +79,13 @@ def test_settings_reject_invalid_ranges_and_empty_models(field: str, value: obje
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None, **values)
+
+
+def test_settings_reject_candidate_default_duration_inversion() -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            openai_api_key="sk-test-value",
+            default_min_duration_minutes=12,
+            default_max_duration_minutes=8,
+        )

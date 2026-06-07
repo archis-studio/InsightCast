@@ -28,5 +28,4 @@ def test_output_directory_names_include_timestamp_title_kind_and_short_id() -> N
         build_direct_job_dir_name("Video Title", "d4e5f6a7", now)
         == "20260606-143000_video-title_direct_d4e5f6"
     )
-    assert build_render_dir_name(now) == "20260606-143000"
-
+    assert build_render_dir_name(now, "render123") == "20260606-143000-render"

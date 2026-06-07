@@ -43,4 +43,13 @@ def test_openapi_documents_all_operations_descriptions_examples_and_errors(
     analysis_schema = schema["components"]["schemas"]["AnalysisJobCreateRequest"]
     assert analysis_schema["properties"]["youtube_url"]["description"]
     assert analysis_schema["properties"]["candidate_count"]["examples"] == [2]
+    for field in (
+        "candidate_count",
+        "min_duration_minutes",
+        "max_duration_minutes",
+    ):
+        assert field not in analysis_schema["required"]
+        assert "default" not in analysis_schema["properties"][field]
+        assert "anyOf" not in analysis_schema["properties"][field]
+        assert "override" in analysis_schema["properties"][field]["description"].lower()
     assert "ErrorResponse" in schema["components"]["schemas"]

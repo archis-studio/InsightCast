@@ -38,3 +38,17 @@ def normalize_youtube_url(url: str) -> str:
         raise _invalid_url(url)
     return f"https://www.youtube.com/watch?v={video_id}"
 
+
+def validate_youtube_video_id(video_id: str) -> str:
+    if _VIDEO_ID_PATTERN.fullmatch(video_id) is None:
+        raise InsightCastError(
+            ErrorCode.INVALID_CACHE_TARGET,
+            "A valid YouTube video ID is required.",
+            details={"video_id": video_id},
+        )
+    return video_id
+
+
+def extract_youtube_video_id(url: str) -> str:
+    normalized = normalize_youtube_url(url)
+    return parse_qs(urlparse(normalized).query)["v"][0]

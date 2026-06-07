@@ -71,7 +71,13 @@ class FakeService:
         return []
 
 
-def make_client(tmp_path: Path) -> tuple[TestClient, FakeService]:
+def make_client(
+    tmp_path: Path,
+    *,
+    default_candidate_count: int = 2,
+    default_min_duration_minutes: float = 8,
+    default_max_duration_minutes: float = 12,
+) -> tuple[TestClient, FakeService]:
     service = FakeService(tmp_path)
     app = create_app(
         settings=Settings(
@@ -79,6 +85,9 @@ def make_client(tmp_path: Path) -> tuple[TestClient, FakeService]:
             openai_api_key="sk-test-value",
             output_dir=tmp_path / "outputs",
             work_dir=tmp_path / ".work",
+            default_candidate_count=default_candidate_count,
+            default_min_duration_minutes=default_min_duration_minutes,
+            default_max_duration_minutes=default_max_duration_minutes,
         ),
         service=service,
         ffmpeg=FakeFfmpeg(),
@@ -116,6 +125,82 @@ def test_analysis_routes_queue_get_render_and_list(tmp_path: Path) -> None:
     assert render.status_code == 202
     assert render.json()["render_id"] == "render-1"
     assert batches.json()["render_batches"] == []
+
+
+def test_analysis_route_uses_configured_defaults_for_omitted_fields(tmp_path: Path) -> None:
+    client, service = make_client(
+        tmp_path,
+        default_candidate_count=4,
+        default_min_duration_minutes=6,
+        default_max_duration_minutes=9,
+    )
+    with client:
+        response = client.post(
+            "/api/v1/analysis-jobs",
+            json={"youtube_url": "https://youtu.be/abc123DEF_-"},
+        )
+
+    assert response.status_code == 202
+    assert service.created[0]["candidate_count"] == 4
+    assert service.created[0]["min_duration_minutes"] == 6
+    assert service.created[0]["max_duration_minutes"] == 9
+
+
+def test_analysis_route_merges_partial_overrides_field_by_field(tmp_path: Path) -> None:
+    client, service = make_client(
+        tmp_path,
+        default_candidate_count=4,
+        default_min_duration_minutes=6,
+        default_max_duration_minutes=9,
+    )
+    with client:
+        response = client.post(
+            "/api/v1/analysis-jobs",
+            json={
+                "youtube_url": "https://youtu.be/abc123DEF_-",
+                "candidate_count": 3,
+                "max_duration_minutes": 10,
+            },
+        )
+
+    assert response.status_code == 202
+    assert service.created[0]["candidate_count"] == 3
+    assert service.created[0]["min_duration_minutes"] == 6
+    assert service.created[0]["max_duration_minutes"] == 10
+
+
+def test_analysis_route_rejects_explicit_null_override(tmp_path: Path) -> None:
+    client, _ = make_client(tmp_path)
+    with client:
+        response = client.post(
+            "/api/v1/analysis-jobs",
+            json={
+                "youtube_url": "https://youtu.be/abc123DEF_-",
+                "candidate_count": None,
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "INVALID_REQUEST"
+
+
+def test_analysis_route_rejects_invalid_merged_duration_range(tmp_path: Path) -> None:
+    client, _ = make_client(
+        tmp_path,
+        default_min_duration_minutes=8,
+        default_max_duration_minutes=12,
+    )
+    with client:
+        response = client.post(
+            "/api/v1/analysis-jobs",
+            json={
+                "youtube_url": "https://youtu.be/abc123DEF_-",
+                "min_duration_minutes": 13,
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "INVALID_REQUEST"
 
 
 def test_job_not_found_uses_stable_flat_error_shape(tmp_path: Path) -> None:

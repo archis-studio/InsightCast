@@ -59,6 +59,9 @@ class FakeSource:
     async def ingest(self, **kwargs: object) -> SourceResult:
         output_dir = Path(kwargs["output_root"]) / f"final-{kwargs['job_id']}"
         source_dir = output_dir / "source"
+        source_dir.mkdir(parents=True, exist_ok=True)
+        (source_dir / "source.mp4").write_bytes(b"video")
+        (source_dir / "audio.mp3").write_bytes(b"audio")
         return SourceResult(
             output_dir=output_dir,
             metadata=YouTubeMetadata(
@@ -199,6 +202,37 @@ async def test_analysis_pipeline_stops_at_waiting_selection(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_analysis_job_stores_resolved_candidate_options(tmp_path: Path) -> None:
+    service, _, _ = make_service(tmp_path)
+
+    job = await service.create_analysis_job(
+        "https://youtu.be/abc123DEF_-",
+        candidate_count=3,
+        min_duration_minutes=6,
+        max_duration_minutes=9,
+    )
+
+    assert job.candidate_count == 3
+    assert job.min_duration_minutes == 6
+    assert job.max_duration_minutes == 9
+
+
+@pytest.mark.asyncio
+async def test_new_jobs_are_created_under_outputs_jobs(tmp_path: Path) -> None:
+    service, _, _ = make_service(tmp_path)
+
+    analysis = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+    direct = await service.create_direct_render_job(
+        "https://youtu.be/abc123DEF_-",
+        start_seconds=10,
+        end_seconds=20,
+    )
+
+    assert analysis.output_dir.parent == (tmp_path / "outputs" / "jobs").resolve()
+    assert direct.output_dir.parent == (tmp_path / "outputs" / "jobs").resolve()
+
+
+@pytest.mark.asyncio
 async def test_render_skips_completed_candidate_and_force_creates_new_batch(
     tmp_path: Path,
 ) -> None:
@@ -222,6 +256,7 @@ async def test_render_skips_completed_candidate_and_force_creates_new_batch(
     await service.process(await service.queue.get())
 
     assert first.status == JobStatus.COMPLETED
+    assert first.output_dir.name == "20260606-143005-id0002"
     assert skipped.status == JobStatus.COMPLETED
     assert forced.render_id != first.render_id
     assert clip.calls == ["A", "A"]
@@ -252,6 +287,29 @@ async def test_partial_render_failure_keeps_success_and_can_retry_failed_candida
     )
     await service.process(await service.queue.get())
     assert retry.status == JobStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_render_reports_removed_source_cache_artifact(tmp_path: Path) -> None:
+    service, _, clip = make_service(tmp_path)
+    job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+    await service.process(await service.queue.get())
+    assert job.source_artifacts is not None
+    job.source_artifacts.source_video.unlink()
+
+    batch = await service.create_render(
+        job.job_id,
+        CandidateSelectionRequest(candidate_ids="A"),
+    )
+    await service.process(await service.queue.get())
+
+    assert batch.status == JobStatus.FAILED
+    assert batch.candidate_results["A"].error is not None
+    assert (
+        batch.candidate_results["A"].error.error_code
+        == ErrorCode.SOURCE_CACHE_MISSING
+    )
+    assert clip.calls == []
 
 
 @pytest.mark.asyncio
@@ -393,6 +451,7 @@ async def test_pipeline_log_records_analysis_and_render_stage_timings(
     await service.process(await service.queue.get())
 
     log = (job.output_dir / "pipeline.log").read_text(encoding="utf-8")
+    assert "source_cache_miss" in log
     for stage in (
         "source_ingestion",
         "transcription",

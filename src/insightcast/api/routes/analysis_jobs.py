@@ -2,8 +2,10 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, status
+from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError
 
-from insightcast.api.dependencies import JobServiceDependency
+from insightcast.api.dependencies import JobServiceDependency, SettingsDependency
 from insightcast.api.schemas import (
     AnalysisJobCreateRequest,
     AnalysisJobResponse,
@@ -12,6 +14,7 @@ from insightcast.api.schemas import (
     RenderBatchListResponse,
     RenderBatchResponse,
     RenderCreateRequest,
+    ResolvedCandidateOptions,
 )
 from insightcast.core.exceptions import InsightCastError
 from insightcast.domain.enums import ErrorCode
@@ -61,12 +64,33 @@ def _job_artifacts(job: AnalysisJob) -> dict[str, Any]:
 async def create_analysis_job(
     request: AnalysisJobCreateRequest,
     service: JobServiceDependency,
+    settings: SettingsDependency,
 ) -> QueuedJobResponse:
+    try:
+        options = ResolvedCandidateOptions(
+            candidate_count=(
+                request.candidate_count
+                if request.candidate_count is not None
+                else settings.default_candidate_count
+            ),
+            min_duration_minutes=(
+                request.min_duration_minutes
+                if request.min_duration_minutes is not None
+                else settings.default_min_duration_minutes
+            ),
+            max_duration_minutes=(
+                request.max_duration_minutes
+                if request.max_duration_minutes is not None
+                else settings.default_max_duration_minutes
+            ),
+        )
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors()) from exc
     job = await service.create_analysis_job(
         request.youtube_url,
-        candidate_count=request.candidate_count,
-        min_duration_minutes=request.min_duration_minutes,
-        max_duration_minutes=request.max_duration_minutes,
+        candidate_count=options.candidate_count,
+        min_duration_minutes=options.min_duration_minutes,
+        max_duration_minutes=options.max_duration_minutes,
         force_reanalyze=request.force_reanalyze,
     )
     return QueuedJobResponse(

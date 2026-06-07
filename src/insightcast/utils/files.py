@@ -31,6 +31,5 @@ def build_direct_job_dir_name(title: str, job_id: str, created_at: datetime) -> 
     return f"{_timestamp(created_at)}_{sanitize_filename(title)}_direct_{job_id[:6]}"
 
 
-def build_render_dir_name(created_at: datetime) -> str:
-    return _timestamp(created_at)
-
+def build_render_dir_name(created_at: datetime, render_id: str) -> str:
+    return f"{_timestamp(created_at)}-{render_id[:6]}"

@@ -40,6 +40,7 @@ async def test_fetch_metadata_parses_complete_youtube_json() -> None:
 
     assert metadata.title == "Video Title"
     assert metadata.duration_seconds == 123.5
+    assert "raw" not in metadata.model_dump()
     assert runner.calls == [
         [
             "yt-dlp",
@@ -83,4 +84,3 @@ async def test_ytdlp_failure_becomes_stable_application_error() -> None:
     assert exc_info.value.error_code == ErrorCode.YOUTUBE_DOWNLOAD_FAILED
     assert exc_info.value.details["returncode"] == 1
     assert "private failure" in exc_info.value.details["stderr"]
-

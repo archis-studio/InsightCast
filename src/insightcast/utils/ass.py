@@ -41,6 +41,31 @@ def serialize_bilingual_ass(items: Sequence[SubtitleItem], *, title: str) -> str
         "MarginV",
         "Encoding",
     )
+    chinese_style = (
+        "TraditionalChinese",
+        "PingFang TC",
+        "46",
+        "&H0082E0FF",
+        "&H000000FF",
+        "&H00101010",
+        "&H80000000",
+        "0",
+        "0",
+        "0",
+        "0",
+        "100",
+        "100",
+        "0",
+        "0",
+        "1",
+        "3",
+        "1",
+        "2",
+        "80",
+        "80",
+        "165",
+        "1",
+    )
     english_style = (
         "English",
         "Arial",
@@ -63,32 +88,7 @@ def serialize_bilingual_ass(items: Sequence[SubtitleItem], *, title: str) -> str
         "2",
         "80",
         "80",
-        "105",
-        "1",
-    )
-    chinese_style = (
-        "TraditionalChinese",
-        "PingFang TC",
-        "46",
-        "&H0000FFFF",
-        "&H000000FF",
-        "&H00101010",
-        "&H80000000",
-        "0",
-        "0",
-        "0",
-        "0",
-        "100",
-        "100",
-        "0",
-        "0",
-        "1",
-        "3",
-        "1",
-        "2",
-        "80",
-        "80",
-        "45",
+        "90",
         "1",
     )
     header_lines = [
@@ -102,8 +102,8 @@ def serialize_bilingual_ass(items: Sequence[SubtitleItem], *, title: str) -> str
         "",
         "[V4+ Styles]",
         f"Format: {', '.join(style_fields)}",
-        f"Style: {','.join(english_style)}",
         f"Style: {','.join(chinese_style)}",
+        f"Style: {','.join(english_style)}",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -114,11 +114,11 @@ def serialize_bilingual_ass(items: Sequence[SubtitleItem], *, title: str) -> str
         start = format_ass_time(item.start_seconds)
         end = format_ass_time(item.end_seconds)
         events.append(
-            f"Dialogue: 0,{start},{end},English,,0,0,0,,{_escape_ass_text(item.english_text)}"
+            "Dialogue: "
+            f"1,{start},{end},TraditionalChinese,,0,0,0,,"
+            f"{_escape_ass_text(item.traditional_chinese_text)}"
         )
         events.append(
-            "Dialogue: "
-            f"0,{start},{end},TraditionalChinese,,0,0,0,,"
-            f"{_escape_ass_text(item.traditional_chinese_text)}"
+            f"Dialogue: 0,{start},{end},English,,0,0,0,,{_escape_ass_text(item.english_text)}"
         )
     return header + "\n".join(events) + ("\n" if events else "")
