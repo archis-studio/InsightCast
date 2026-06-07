@@ -31,6 +31,7 @@ from insightcast.infrastructure.ytdlp_client import YtDlpClient
 from insightcast.services.job_service import JobService
 from insightcast.services.queue_worker import QueueWorker
 from insightcast.storage.file_job_writer import FileJobWriter
+from insightcast.storage.video_store import VideoStore
 
 
 def _build_runtime(settings: Settings) -> tuple[JobService, FfmpegClient]:
@@ -62,7 +63,8 @@ def _build_runtime(settings: Settings) -> tuple[JobService, FfmpegClient]:
             max_upload_mb=settings.openai_transcription_max_upload_mb,
         )
     writer = FileJobWriter()
-    source = SourceEngine(ytdlp=ytdlp, ffmpeg=ffmpeg)
+    video_store = VideoStore(settings.output_dir, writer)
+    source = SourceEngine(ytdlp=ytdlp, ffmpeg=ffmpeg, video_store=video_store)
     lingo = LingoEngine(
         client=structured,
         model=settings.effective_translation_model,

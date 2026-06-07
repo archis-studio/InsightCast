@@ -5,7 +5,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from insightcast.core.exceptions import InsightCastError
-from insightcast.storage.source_cache import SourceCache
+from insightcast.storage.file_job_writer import FileJobWriter
+from insightcast.storage.video_store import VideoStore
 
 
 def _format_size(size: int) -> str:
@@ -38,10 +39,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    cache = SourceCache(Path(args.output_dir) / "source-cache")
+    store = VideoStore(Path(args.output_dir), FileJobWriter())
     try:
         if args.command == "list":
-            for entry in cache.list_entries():
+            for entry in store.list_sources():
                 print(
                     "\t".join(
                         (
@@ -55,14 +56,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             return 0
         if args.command == "remove":
-            if not cache.remove(args.video_id):
+            if not store.remove_source(args.video_id):
                 print(f"Cache entry not found: {args.video_id}", file=sys.stderr)
                 return 1
             return 0
         if not args.yes:
             print("Refusing to clear source cache without --yes.", file=sys.stderr)
             return 2
-        cache.clear()
+        store.clear_sources()
         return 0
     except InsightCastError as exc:
         print(f"{exc.error_code.value}: {exc.message}", file=sys.stderr)

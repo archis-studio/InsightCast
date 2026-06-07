@@ -57,7 +57,9 @@ class FakeWriter:
 
 class FakeSource:
     async def ingest(self, **kwargs: object) -> SourceResult:
-        output_dir = Path(kwargs["output_root"]) / f"final-{kwargs['job_id']}"
+        output_dir = (
+            Path(kwargs["output_root"]) / "videos" / "abc123DEF_-_source"
+        ).resolve()
         source_dir = output_dir / "source"
         source_dir.mkdir(parents=True, exist_ok=True)
         (source_dir / "source.mp4").write_bytes(b"video")
@@ -290,7 +292,7 @@ async def test_partial_render_failure_keeps_success_and_can_retry_failed_candida
 
 
 @pytest.mark.asyncio
-async def test_render_reports_removed_source_cache_artifact(tmp_path: Path) -> None:
+async def test_render_reports_removed_source_artifact(tmp_path: Path) -> None:
     service, _, clip = make_service(tmp_path)
     job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
     await service.process(await service.queue.get())
@@ -421,6 +423,9 @@ async def test_analysis_removes_provisional_output_after_final_directory_is_know
     await service.process(await service.queue.get())
 
     assert job.output_dir != provisional_dir
+    assert job.output_dir == (
+        tmp_path / "outputs" / "videos" / "abc123DEF_-_source"
+    ).resolve()
     assert not provisional_dir.exists()
     log = (job.output_dir / "pipeline.log").read_text(encoding="utf-8")
     assert "WAITING_SELECTION" in log
