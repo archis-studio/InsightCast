@@ -247,6 +247,28 @@ async def test_cancelled_source_transaction_waiter_does_not_leak_lock(
 
 
 @pytest.mark.asyncio
+async def test_source_transaction_enter_failure_releases_same_video_lock(
+    tmp_path: Path,
+) -> None:
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    videos_root = store.videos_root
+    (videos_root / f"{VIDEO_ID}_one").mkdir(parents=True)
+    duplicate = videos_root / f"{VIDEO_ID}_two"
+    duplicate.mkdir()
+
+    with pytest.raises(InsightCastError) as exc_info:
+        async with store.source_transaction(VIDEO_ID):
+            raise AssertionError("duplicate roots should fail before body")
+
+    assert exc_info.value.error_code == ErrorCode.STORAGE_CONFLICT
+    duplicate.rmdir()
+    (videos_root / f"{VIDEO_ID}_one").rmdir()
+    async with asyncio.timeout(1):
+        async with store.source_transaction(VIDEO_ID):
+            pass
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("corruption", ["size", "hash"])
 async def test_size_or_hash_mismatch_triggers_repair(
     tmp_path: Path,

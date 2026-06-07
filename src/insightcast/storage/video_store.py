@@ -77,8 +77,14 @@ class SourceTransaction:
         self._lock_file: BufferedRandom | None = None
 
     async def __aenter__(self) -> "SourceTransaction":
-        self._lock_file = await self._acquire_lock_cancellation_safe()
-        self.store._recover_source_backup_unlocked(self.video_id)
+        lock_file = await self._acquire_lock_cancellation_safe()
+        self._lock_file = lock_file
+        try:
+            self.store._recover_source_backup_unlocked(self.video_id)
+        except BaseException:
+            self._lock_file = None
+            await asyncio.to_thread(self.store._release_video_lock, lock_file)
+            raise
         return self
 
     async def __aexit__(
