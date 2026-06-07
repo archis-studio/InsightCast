@@ -33,6 +33,7 @@ dev = [
 
 [project.scripts]
 cast_api = "insightcast.api.app:run"
+cast_analyze = "insightcast.cli.analyze:main"
 cast_cache = "insightcast.cli.cache:main"
 
 [tool.hatch.build.targets.wheel]

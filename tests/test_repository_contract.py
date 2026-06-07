@@ -12,6 +12,7 @@ def test_required_repository_files_and_console_script_exist() -> None:
         ".gitignore",
         ".env.example",
         ".python-version",
+        "AGENTS.md",
         "README.md",
         "build_backend.py",
         "pyproject.toml",
@@ -24,9 +25,28 @@ def test_required_repository_files_and_console_script_exist() -> None:
 
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["scripts"]["cast_api"] == "insightcast.api.app:run"
+    assert (
+        pyproject["project"]["scripts"]["cast_analyze"]
+        == "insightcast.cli.analyze:main"
+    )
     assert pyproject["project"]["requires-python"] == ">=3.13"
     assert pyproject["tool"]["ruff"]["target-version"] == "py313"
     assert (ROOT / ".python-version").read_text(encoding="utf-8").strip() == "3.13"
+
+
+def test_agents_documents_canonical_analysis_workflow() -> None:
+    instructions = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+    for required_text in [
+        "uv run cast_api",
+        'uv run cast_analyze "<youtube-url>"',
+        "--verbose",
+        "WAITING_SELECTION",
+        "pipeline.log",
+        "Do not start or stop",
+        "Do not queue renders",
+    ]:
+        assert required_text in instructions
 
 
 def test_env_example_documents_every_settings_field() -> None:

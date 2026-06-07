@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,6 +17,8 @@ class Settings(BaseSettings):
 
     api_host: str = "127.0.0.1"
     api_port: int = Field(default=8765, ge=1, le=65535)
+    api_base_url: str = "http://127.0.0.1:8765"
+    analyze_poll_interval_seconds: float = Field(default=30, gt=0)
     output_dir: Path = Path("outputs")
     work_dir: Path = Path(".work")
 
@@ -68,6 +71,20 @@ class Settings(BaseSettings):
         stripped = value.strip()
         if not stripped:
             raise ValueError("value must not be empty")
+        return stripped
+
+    @field_validator("api_base_url")
+    @classmethod
+    def validate_api_base_url(cls, value: str) -> str:
+        stripped = value.strip().rstrip("/")
+        parsed = urlsplit(stripped)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("API_BASE_URL must be a non-empty HTTP or HTTPS URL")
         return stripped
 
     @field_validator("openai_api_key")
