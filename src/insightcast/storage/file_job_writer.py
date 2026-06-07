@@ -28,7 +28,8 @@ class FileJobWriter:
         return self.write_json(job.output_dir / "job_state.json", job)
 
     def write_json(self, path: Path, payload: Any) -> Path:
-        resolved_path = path.expanduser().resolve()
+        expanded_path = path.expanduser()
+        resolved_path = expanded_path.parent.resolve() / expanded_path.name
         resolved_path.parent.mkdir(parents=True, exist_ok=True)
         serialized = json.dumps(
             payload,

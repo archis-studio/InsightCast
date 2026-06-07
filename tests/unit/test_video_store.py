@@ -1,7 +1,9 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import Event, Queue, get_context
 from pathlib import Path
 from threading import Barrier
+from typing import Any
 
 import pytest
 
@@ -15,6 +17,24 @@ from insightcast.storage.video_store import VideoStore
 VIDEO_ID = "abc123DEF_-"
 ORIGINAL_URL = f"https://youtu.be/{VIDEO_ID}"
 SHARE_URL = f"https://www.youtube.com/watch?v={VIDEO_ID}&feature=share"
+
+
+def _ensure_video_process(
+    output_root: str,
+    title: str,
+    start: Event,
+    results: Queue,
+) -> None:
+    start.wait()
+    try:
+        entry = VideoStore(Path(output_root), FileJobWriter()).ensure_video(
+            metadata(title=title),
+            ORIGINAL_URL,
+        )
+    except BaseException as exc:
+        results.put(("error", repr(exc)))
+    else:
+        results.put(("ok", str(entry.root)))
 
 
 def metadata(
@@ -40,6 +60,22 @@ def test_video_store_resolves_output_and_videos_roots(tmp_path: Path) -> None:
 
     assert store.output_root == (tmp_path / "outputs").resolve()
     assert store.videos_root == store.output_root / "videos"
+
+
+def test_video_store_rejects_external_videos_root_symlink_before_writes(
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "outputs"
+    external = tmp_path / "external"
+    output_root.mkdir()
+    external.mkdir()
+    (output_root / "videos").symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(InsightCastError) as error:
+        VideoStore(output_root, FileJobWriter())
+
+    assert error.value.error_code == ErrorCode.ARTIFACT_PATH_INVALID
+    assert list(external.iterdir()) == []
 
 
 def test_matching_video_roots_validates_exact_prefix_and_returns_sorted_directories(
@@ -144,6 +180,35 @@ def test_find_video_rejects_manifest_identity_mismatch(tmp_path: Path) -> None:
     }
 
 
+def test_video_store_rejects_external_manifest_symlink_without_writing_target(
+    tmp_path: Path,
+) -> None:
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    created = store.ensure_video(metadata(), ORIGINAL_URL)
+    external_manifest = tmp_path / "external-video.json"
+    external_contents = b'{"external": true}\n'
+    external_manifest.write_bytes(external_contents)
+    manifest_path = created.root / "video.json"
+    manifest_path.unlink()
+    manifest_path.symlink_to(external_manifest)
+
+    for operation in (
+        lambda: store.read_manifest(manifest_path, VideoManifest),
+        lambda: store.find_video(VIDEO_ID),
+        lambda: store.ensure_video(metadata(title="Updated"), SHARE_URL),
+    ):
+        with pytest.raises(InsightCastError) as error:
+            operation()
+        assert error.value.error_code == ErrorCode.MANIFEST_INVALID
+        assert error.value.details == {
+            "manifest_path": str(manifest_path.absolute()),
+            "reason": "not_regular_file",
+        }
+
+    assert external_manifest.read_bytes() == external_contents
+    assert manifest_path.is_symlink()
+
+
 def test_video_store_rejects_duplicate_video_roots(tmp_path: Path) -> None:
     videos = tmp_path / "outputs" / "videos"
     (videos / f"{VIDEO_ID}_one").mkdir(parents=True)
@@ -171,6 +236,54 @@ def test_concurrent_first_creation_uses_one_video_root(tmp_path: Path) -> None:
 
     assert roots[0] == roots[1]
     assert len(VideoStore(output_root, FileJobWriter()).matching_video_roots(VIDEO_ID)) == 1
+
+
+def test_cross_process_first_creation_uses_one_video_root(tmp_path: Path) -> None:
+    context = get_context("spawn")
+    start = context.Event()
+    results = context.Queue()
+    processes = [
+        context.Process(
+            target=_ensure_video_process,
+            args=(str(tmp_path / "outputs"), title, start, results),
+        )
+        for title in ("Process One", "Process Two")
+    ]
+    for process in processes:
+        process.start()
+
+    start.set()
+    outcomes: list[tuple[str, Any]] = [results.get(timeout=10) for _ in processes]
+    for process in processes:
+        process.join(timeout=10)
+        assert process.exitcode == 0
+
+    assert [status for status, _ in outcomes] == ["ok", "ok"]
+    roots = [root for _, root in outcomes]
+    assert roots[0] == roots[1]
+    assert len(
+        VideoStore(tmp_path / "outputs", FileJobWriter()).matching_video_roots(VIDEO_ID)
+    ) == 1
+
+
+def test_ensure_video_removes_only_exact_stale_staging_directories(
+    tmp_path: Path,
+) -> None:
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    store.videos_root.mkdir(parents=True)
+    stale = store.videos_root / f".{VIDEO_ID}-{'a' * 32}.tmp"
+    stale.mkdir()
+    (stale / "partial").write_text("partial", encoding="utf-8")
+    short = store.videos_root / f".{VIDEO_ID}-short.tmp"
+    short.mkdir()
+    other = store.videos_root / f".different01-{'b' * 32}.tmp"
+    other.mkdir()
+
+    store.ensure_video(metadata(), ORIGINAL_URL)
+
+    assert not stale.exists()
+    assert short.is_dir()
+    assert other.is_dir()
 
 
 def test_failed_initial_manifest_write_leaves_no_root_and_retry_succeeds(
