@@ -225,6 +225,191 @@ def test_transcript_and_analysis_manifests_expose_approved_contracts() -> None:
     assert analysis.state is AnalysisState.WAITING_SELECTION
 
 
+@pytest.mark.parametrize("candidate_id", ["../A", "lower", "AA"])
+def test_analysis_manifest_rejects_invalid_candidate_path_keys(candidate_id: str) -> None:
+    now = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
+
+    with pytest.raises(ValidationError, match="candidate ID"):
+        AnalysisManifest(
+            analysis_id="20260607-120000-abcdef",
+            operation_id="operation-1",
+            created_at=now,
+            completed_at=None,
+            normalized_source_url="https://www.youtube.com/watch?v=abc123DEF_-",
+            video_id="abc123DEF_-",
+            transcript_id="transcript-1",
+            curator_model="gpt-4.1",
+            prompt_version="v1",
+            candidate_count=1,
+            min_duration_seconds=480,
+            max_duration_seconds=720,
+            state=AnalysisState.WAITING_SELECTION,
+            candidates_path=Path("analyses/20260607-120000-abcdef/candidates.json"),
+            candidate_paths={
+                candidate_id: Path("analyses/20260607-120000-abcdef/candidates/A")
+            },
+            log_path=Path("logs/operation-1.log"),
+        )
+
+
+@pytest.mark.parametrize("candidate_id", ["A", "Z"])
+def test_analysis_manifest_accepts_boundary_candidate_path_keys(candidate_id: str) -> None:
+    now = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
+
+    manifest = AnalysisManifest(
+        analysis_id="20260607-120000-abcdef",
+        operation_id="operation-1",
+        created_at=now,
+        completed_at=None,
+        normalized_source_url="https://www.youtube.com/watch?v=abc123DEF_-",
+        video_id="abc123DEF_-",
+        transcript_id="transcript-1",
+        curator_model="gpt-4.1",
+        prompt_version="v1",
+        candidate_count=1,
+        min_duration_seconds=480,
+        max_duration_seconds=720,
+        state=AnalysisState.WAITING_SELECTION,
+        candidates_path=Path("analyses/20260607-120000-abcdef/candidates.json"),
+        candidate_paths={
+            candidate_id: Path(f"analyses/20260607-120000-abcdef/candidates/{candidate_id}")
+        },
+        log_path=Path("logs/operation-1.log"),
+    )
+
+    assert list(manifest.candidate_paths) == [candidate_id]
+
+
+@pytest.mark.parametrize("candidate_id", ["../A", "lower", "AA"])
+def test_render_manifest_rejects_invalid_candidate_ids(candidate_id: str) -> None:
+    now = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
+
+    with pytest.raises(ValidationError, match="candidate ID"):
+        RenderManifest(
+            render_id="20260607-120000-abcdef",
+            operation_id="operation-1",
+            kind=RenderKind.CANDIDATE,
+            analysis_id="20260607-115900-fedcba",
+            candidate_id=candidate_id,
+            start_seconds=10,
+            end_seconds=70,
+            source_fingerprint="a" * 64,
+            transcript_id="transcript-1",
+            render_config={},
+            artifacts={"video": Path("video.mp4")},
+            artifact_sizes={"video": 100},
+            created_at=now,
+            completed_at=None,
+            render_state=RenderState.READY,
+            publish_state=PublishState.NOT_UPLOADED,
+            youtube_video_id=None,
+            youtube_url=None,
+            upload_started_at=None,
+            uploaded_at=None,
+            log_path=Path("logs/operation-1.log"),
+        )
+
+
+@pytest.mark.parametrize("candidate_id", ["A", "Z"])
+def test_render_manifest_accepts_boundary_candidate_ids(candidate_id: str) -> None:
+    now = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
+
+    manifest = RenderManifest(
+        render_id="20260607-120000-abcdef",
+        operation_id="operation-1",
+        kind=RenderKind.CANDIDATE,
+        analysis_id="20260607-115900-fedcba",
+        candidate_id=candidate_id,
+        start_seconds=10,
+        end_seconds=70,
+        source_fingerprint="a" * 64,
+        transcript_id="transcript-1",
+        render_config={},
+        artifacts={"video": Path("video.mp4")},
+        artifact_sizes={"video": 100},
+        created_at=now,
+        completed_at=None,
+        render_state=RenderState.READY,
+        publish_state=PublishState.NOT_UPLOADED,
+        youtube_video_id=None,
+        youtube_url=None,
+        upload_started_at=None,
+        uploaded_at=None,
+        log_path=Path("logs/operation-1.log"),
+    )
+
+    assert manifest.candidate_id == candidate_id
+
+
+def test_custom_render_manifest_omits_candidate_identity() -> None:
+    now = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
+
+    manifest = RenderManifest(
+        render_id="20260607-120000-abcdef",
+        operation_id="operation-1",
+        kind=RenderKind.CUSTOM,
+        start_seconds=10,
+        end_seconds=70,
+        source_fingerprint="a" * 64,
+        transcript_id="transcript-1",
+        render_config={},
+        artifacts={"video": Path("video.mp4")},
+        artifact_sizes={"video": 100},
+        created_at=now,
+        completed_at=None,
+        render_state=RenderState.READY,
+        publish_state=PublishState.NOT_UPLOADED,
+        youtube_video_id=None,
+        youtube_url=None,
+        upload_started_at=None,
+        uploaded_at=None,
+        log_path=Path("logs/operation-1.log"),
+    )
+
+    assert manifest.analysis_id is None
+    assert manifest.candidate_id is None
+
+
+@pytest.mark.parametrize(
+    ("kind", "analysis_id", "candidate_id"),
+    [
+        (RenderKind.CANDIDATE, "20260607-115900-fedcba", None),
+        (RenderKind.CUSTOM, "20260607-115900-fedcba", "A"),
+    ],
+)
+def test_render_manifest_enforces_candidate_identity_by_kind(
+    kind: RenderKind,
+    analysis_id: str | None,
+    candidate_id: str | None,
+) -> None:
+    now = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
+
+    with pytest.raises(ValidationError):
+        RenderManifest(
+            render_id="20260607-120000-abcdef",
+            operation_id="operation-1",
+            kind=kind,
+            analysis_id=analysis_id,
+            candidate_id=candidate_id,
+            start_seconds=10,
+            end_seconds=70,
+            source_fingerprint="a" * 64,
+            transcript_id="transcript-1",
+            render_config={},
+            artifacts={"video": Path("video.mp4")},
+            artifact_sizes={"video": 100},
+            created_at=now,
+            completed_at=None,
+            render_state=RenderState.READY,
+            publish_state=PublishState.NOT_UPLOADED,
+            youtube_video_id=None,
+            youtube_url=None,
+            upload_started_at=None,
+            uploaded_at=None,
+            log_path=Path("logs/operation-1.log"),
+        )
+
+
 def test_render_manifest_rejects_absolute_artifact_paths() -> None:
     now = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
 

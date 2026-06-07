@@ -65,6 +65,15 @@ def validate_relative_path(value: Path) -> Path:
 RelativePath = Annotated[Path, AfterValidator(validate_relative_path)]
 
 
+def validate_candidate_id(value: str) -> str:
+    if len(value) != 1 or not "A" <= value <= "Z":
+        raise ValueError("candidate ID must be a single uppercase letter from A to Z")
+    return value
+
+
+CandidateId = Annotated[str, AfterValidator(validate_candidate_id)]
+
+
 class ManifestModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -126,7 +135,7 @@ class AnalysisManifest(ManifestModel):
     max_duration_seconds: float = Field(gt=0)
     state: AnalysisState
     candidates_path: RelativePath
-    candidate_paths: dict[str, RelativePath]
+    candidate_paths: dict[CandidateId, RelativePath]
     log_path: RelativePath
     error: JobError | None = None
 
@@ -142,7 +151,7 @@ class RenderManifest(ManifestModel):
     operation_id: str
     kind: RenderKind
     analysis_id: str | None = None
-    candidate_id: str | None = None
+    candidate_id: CandidateId | None = None
     start_seconds: float = Field(ge=0)
     end_seconds: float = Field(gt=0)
     source_fingerprint: str
