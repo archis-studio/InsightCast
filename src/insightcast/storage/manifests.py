@@ -66,7 +66,7 @@ RelativePath = Annotated[Path, AfterValidator(validate_relative_path)]
 
 
 class ManifestModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     schema_version: Literal[SCHEMA_VERSION] = SCHEMA_VERSION
 

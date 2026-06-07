@@ -130,6 +130,25 @@ def test_manifest_models_are_strict_and_require_schema_version_one() -> None:
         VideoManifest.model_validate({**manifest.model_dump(), "schema_version": 2})
 
 
+def test_manifest_models_reject_numeric_strings_in_numeric_fields() -> None:
+    now = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
+
+    with pytest.raises(ValidationError):
+        SourceManifest(
+            video_id="abc123DEF_-",
+            source_fingerprint="a" * 64,
+            fingerprint_algorithm="sha256",
+            source_video_path=Path("source/source.mp4"),
+            source_video_size="100",
+            transcription_audio_path=Path("source/audio.mp3"),
+            transcription_audio_size=50,
+            downloaded_at=now,
+            audio_extracted_at=now,
+            source_metadata={},
+            state=ManifestState.READY,
+        )
+
+
 def test_all_manifest_path_fields_reject_traversal() -> None:
     now = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
 

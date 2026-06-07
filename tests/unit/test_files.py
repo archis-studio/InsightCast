@@ -1,4 +1,6 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
+
+import pytest
 
 from insightcast.utils.files import (
     build_analysis_job_dir_name,
@@ -41,3 +43,14 @@ def test_run_id_uses_utc_timestamp_and_short_unique_id() -> None:
     created_at = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
 
     assert build_run_id(created_at, "abcdef1234") == "20260607-120000-abcdef"
+
+
+def test_run_id_normalizes_timezone_aware_datetime_to_utc() -> None:
+    created_at = datetime(2026, 6, 7, 20, 0, tzinfo=timezone(timedelta(hours=8)))
+
+    assert build_run_id(created_at, "abcdef1234") == "20260607-120000-abcdef"
+
+
+def test_run_id_rejects_naive_datetime() -> None:
+    with pytest.raises(ValueError, match="timezone-aware"):
+        build_run_id(datetime(2026, 6, 7, 12, 0), "abcdef1234")

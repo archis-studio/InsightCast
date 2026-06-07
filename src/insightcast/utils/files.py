@@ -1,6 +1,6 @@
 import re
 import unicodedata
-from datetime import datetime
+from datetime import UTC, datetime
 
 from insightcast.utils.youtube import validate_youtube_video_id
 
@@ -42,4 +42,6 @@ def build_video_dir_name(video_id: str, title: str) -> str:
 
 
 def build_run_id(created_at: datetime, unique_id: str) -> str:
-    return f"{_timestamp(created_at)}-{unique_id[:6]}"
+    if created_at.tzinfo is None or created_at.utcoffset() is None:
+        raise ValueError("created_at must be timezone-aware")
+    return f"{_timestamp(created_at.astimezone(UTC))}-{unique_id[:6]}"
