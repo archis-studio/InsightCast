@@ -59,6 +59,25 @@ def test_candidate_defaults_are_configurable() -> None:
     assert settings.default_max_duration_minutes == 9
 
 
+def test_analysis_cli_settings_have_defaults() -> None:
+    settings = Settings(_env_file=None, openai_api_key="sk-test-value")
+
+    assert settings.api_base_url == "http://127.0.0.1:8765"
+    assert settings.analyze_poll_interval_seconds == 30
+
+
+def test_analysis_cli_settings_load_environment_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("API_BASE_URL", "https://api.example.test/base/")
+    monkeypatch.setenv("ANALYZE_POLL_INTERVAL_SECONDS", "2.5")
+
+    settings = Settings(_env_file=None, openai_api_key="sk-test-value")
+
+    assert settings.api_base_url == "https://api.example.test/base"
+    assert settings.analyze_poll_interval_seconds == 2.5
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -72,6 +91,8 @@ def test_candidate_defaults_are_configurable() -> None:
         ("default_candidate_count", 27),
         ("default_min_duration_minutes", 0),
         ("default_max_duration_minutes", 0),
+        ("analyze_poll_interval_seconds", 0),
+        ("analyze_poll_interval_seconds", -1),
     ],
 )
 def test_settings_reject_invalid_ranges_and_empty_models(field: str, value: object) -> None:
@@ -88,4 +109,23 @@ def test_settings_reject_candidate_default_duration_inversion() -> None:
             openai_api_key="sk-test-value",
             default_min_duration_minutes=12,
             default_max_duration_minutes=8,
+        )
+
+
+@pytest.mark.parametrize(
+    "api_base_url",
+    [
+        "",
+        "ftp://api.example.test",
+        "http:///missing-host",
+        "https://api.example.test/path?query=value",
+        "https://api.example.test/path#fragment",
+    ],
+)
+def test_settings_reject_invalid_api_base_url(api_base_url: str) -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            openai_api_key="sk-test-value",
+            api_base_url=api_base_url,
         )

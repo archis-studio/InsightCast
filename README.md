@@ -83,6 +83,8 @@ uv sync --extra dev
 | --- | --- | --- | --- |
 | `API_HOST` | 否 | `127.0.0.1` | API 綁定位置；本機使用預設值。 |
 | `API_PORT` | 否 | `8765` | API port，範圍 1-65535。 |
+| `API_BASE_URL` | 否 | `http://127.0.0.1:8765` | CLI 使用的 client-facing API URL，可與 server binding 不同。 |
+| `ANALYZE_POLL_INTERVAL_SECONDS` | 否 | `30` | Analysis CLI 狀態輪詢秒數，必須大於 0。 |
 | `OUTPUT_DIR` | 否 | `outputs` | Job state、來源與完成品根目錄。 |
 | `WORK_DIR` | 否 | `.work` | 可診斷的暫存 clip 與 audio chunks。 |
 | `DEFAULT_CANDIDATE_COUNT` | 否 | `2` | Analysis request 未提供 override 時的候選數量，範圍 1-26。 |
@@ -137,6 +139,36 @@ uv run cast_api
 - OpenAPI JSON：<http://127.0.0.1:8765/openapi.json>
 
 啟動時會驗證設定與 FFmpeg。Local Whisper model 不會在 startup 下載。
+
+## Analysis CLI
+
+API server lifecycle 與分析命令分開管理。先在一個 terminal 啟動 server：
+
+```bash
+uv run cast_api
+```
+
+再從 repository root 的另一個 terminal 執行：
+
+```bash
+uv run cast_analyze "https://www.youtube.com/watch?v=abc123DEF_-"
+```
+
+命令會先檢查 `/health`，建立一個 analysis job，立即開始輪詢，並在每次 poll
+顯示 status、API message 與總經過時間。`WAITING_SELECTION` 代表分析成功完成；
+此時命令會列出 candidate ID、標題、時間範圍、摘要與 source artifact 路徑。
+這個命令只分析，不會 render candidate。
+
+需要完整 API payload 診斷時使用：
+
+```bash
+uv run cast_analyze --verbose "https://www.youtube.com/watch?v=abc123DEF_-"
+```
+
+CLI 不會啟動、停止或重啟 server，也沒有整體 timeout。`Ctrl-C` 只停止本機監看，
+server job 可能仍會繼續。Exit code `0` 表示到達 `WAITING_SELECTION`，`1` 表示 API
+或 analysis failure，`2` 表示參數或本機設定無效，`130` 表示使用者中斷。
+`API_BASE_URL` 是 CLI 連線位置；`API_HOST` 與 `API_PORT` 仍只控制 server binding。
 
 ## Swagger / API 操作
 
