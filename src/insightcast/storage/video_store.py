@@ -1,3 +1,4 @@
+import asyncio
 import fcntl
 import hashlib
 import json
@@ -7,6 +8,7 @@ import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from io import BufferedRandom
 from pathlib import Path
 from typing import Literal, TypeVar
 from uuid import uuid4
@@ -65,6 +67,77 @@ class SourceListing(BaseModel):
     source_size: int
     audio_size: int
     modified_at: datetime
+
+
+class SourceTransaction:
+    def __init__(self, store: "VideoStore", video_id: str) -> None:
+        self.store = store
+        self.video_id = validate_youtube_video_id(video_id)
+        self._lock_file: BufferedRandom | None = None
+
+    async def __aenter__(self) -> "SourceTransaction":
+        self._lock_file = await asyncio.to_thread(
+            self.store._acquire_video_lock,
+            self.video_id,
+        )
+        return self
+
+    async def __aexit__(
+        self,
+        _exc_type: object,
+        _exc: BaseException | None,
+        _traceback: object,
+    ) -> None:
+        lock_file = self._lock_file
+        self._lock_file = None
+        if lock_file is not None:
+            await asyncio.to_thread(self.store._release_video_lock, lock_file)
+
+    def load_source(self) -> SourceLookup:
+        self._require_active()
+        return self.store._load_source_unlocked(self.video_id)
+
+    def ensure_video(
+        self,
+        metadata: YouTubeMetadata,
+        original_url: str,
+    ) -> VideoEntry:
+        self._require_active()
+        if metadata.video_id != self.video_id:
+            raise self.store._invalid_source(
+                self.video_id,
+                "metadata_video_id_mismatch",
+            )
+        return self.store._ensure_video_unlocked(metadata, original_url)
+
+    def create_staging(self) -> Path:
+        self._require_active()
+        return self.store._create_source_staging_unlocked(self.video_id)
+
+    def promote(
+        self,
+        staging: Path,
+        *,
+        metadata: YouTubeMetadata,
+        downloaded_at: datetime,
+        audio_extracted_at: datetime,
+    ) -> SourceEntry:
+        self._require_active()
+        return self.store._promote_source_unlocked(
+            self.video_id,
+            staging,
+            metadata=metadata,
+            downloaded_at=downloaded_at,
+            audio_extracted_at=audio_extracted_at,
+        )
+
+    def discard_staging(self, staging: Path) -> None:
+        self._require_active()
+        self.store._discard_source_staging_unlocked(self.video_id, staging)
+
+    def _require_active(self) -> None:
+        if self._lock_file is None:
+            raise RuntimeError("source transaction is not active")
 
 
 class VideoStore:
@@ -126,29 +199,37 @@ class VideoStore:
         original_url: str,
     ) -> VideoEntry:
         video_id = validate_youtube_video_id(metadata.video_id)
-        normalized_url = normalize_youtube_url(original_url)
         with self._video_lock(video_id):
-            existing = self._find_video_unlocked(video_id)
-            now = datetime.now(UTC)
-            first_seen_at = (
-                now if existing is None else existing.manifest.first_seen_at
-            )
-            manifest = VideoManifest(
-                video_id=video_id,
-                original_youtube_url=original_url,
-                normalized_youtube_url=normalized_url,
-                title=metadata.title,
-                uploader=metadata.uploader,
-                upload_date=metadata.upload_date,
-                first_seen_at=first_seen_at,
-                last_seen_at=now,
-                source_manifest_path=Path("source/manifest.json"),
-            )
-            if existing is not None:
-                manifest_path = self._managed_manifest_path(existing.root)
-                self.writer.write_json(manifest_path, manifest)
-                return VideoEntry(root=existing.root, manifest=manifest)
-            return self._create_video_root(video_id, metadata.title, manifest)
+            return self._ensure_video_unlocked(metadata, original_url)
+
+    def _ensure_video_unlocked(
+        self,
+        metadata: YouTubeMetadata,
+        original_url: str,
+    ) -> VideoEntry:
+        video_id = validate_youtube_video_id(metadata.video_id)
+        existing = self._find_video_unlocked(video_id)
+        now = datetime.now(UTC)
+        first_seen_at = now if existing is None else existing.manifest.first_seen_at
+        manifest = VideoManifest(
+            video_id=video_id,
+            original_youtube_url=original_url,
+            normalized_youtube_url=normalize_youtube_url(original_url),
+            title=metadata.title,
+            uploader=metadata.uploader,
+            upload_date=metadata.upload_date,
+            first_seen_at=first_seen_at,
+            last_seen_at=now,
+            source_manifest_path=Path("source/manifest.json"),
+        )
+        if existing is not None:
+            manifest_path = self._managed_manifest_path(existing.root)
+            self.writer.write_json(manifest_path, manifest)
+            return VideoEntry(root=existing.root, manifest=manifest)
+        return self._create_video_root(video_id, metadata.title, manifest)
+
+    def source_transaction(self, video_id: str) -> SourceTransaction:
+        return SourceTransaction(self, video_id)
 
     def load_source(self, video_id: str) -> SourceLookup:
         validated_video_id = validate_youtube_video_id(video_id)
@@ -172,13 +253,16 @@ class VideoStore:
     def create_source_staging(self, video_id: str) -> Path:
         validated_video_id = validate_youtube_video_id(video_id)
         with self._video_lock(validated_video_id):
-            video = self._find_video_unlocked(validated_video_id)
-            if video is None:
-                raise self._invalid_source(validated_video_id, "video_missing")
-            self._cleanup_stale_source_staging(video.root)
-            staging = video.root / f".source-{uuid4().hex}.tmp"
-            staging.mkdir()
-            return staging.resolve()
+            return self._create_source_staging_unlocked(validated_video_id)
+
+    def _create_source_staging_unlocked(self, video_id: str) -> Path:
+        video = self._find_video_unlocked(video_id)
+        if video is None:
+            raise self._invalid_source(video_id, "video_missing")
+        self._cleanup_stale_source_staging(video.root)
+        staging = video.root / f".source-{uuid4().hex}.tmp"
+        staging.mkdir()
+        return staging.resolve()
 
     def promote_source(
         self,
@@ -193,68 +277,91 @@ class VideoStore:
         if metadata.video_id != validated_video_id:
             raise self._invalid_source(validated_video_id, "metadata_video_id_mismatch")
         with self._video_lock(validated_video_id):
-            video = self._find_video_unlocked(validated_video_id)
-            if video is None:
-                raise self._invalid_source(validated_video_id, "video_missing")
-            resolved_staging = self._managed_source_staging(video, staging)
-            source_video = resolved_staging / "source.mp4"
-            source_audio = resolved_staging / "audio.mp3"
-            if not self._is_regular_non_symlink_file(source_video):
-                raise self._invalid_source(validated_video_id, "source_video_invalid")
-            if not self._is_regular_non_symlink_file(source_audio):
-                raise self._invalid_source(validated_video_id, "source_audio_invalid")
-            source_video_size = source_video.stat().st_size
-            source_audio_size = source_audio.stat().st_size
-            if source_video_size <= 0 or source_audio_size <= 0:
-                raise self._invalid_source(validated_video_id, "source_empty")
-            manifest = SourceManifest(
-                video_id=validated_video_id,
-                source_fingerprint=self._sha256_file(source_video),
-                fingerprint_algorithm="sha256",
-                source_video_path=Path("source/source.mp4"),
-                source_video_size=source_video_size,
-                transcription_audio_path=Path("source/audio.mp3"),
-                transcription_audio_size=source_audio_size,
+            return self._promote_source_unlocked(
+                validated_video_id,
+                staging,
+                metadata=metadata,
                 downloaded_at=downloaded_at,
                 audio_extracted_at=audio_extracted_at,
-                source_metadata=metadata.model_dump(mode="json"),
-                state=ManifestState.READY,
             )
-            self.writer.write_json(resolved_staging / "manifest.json", manifest)
-            if self._validate_source_directory(video, resolved_staging) is None:
-                raise self._invalid_source(validated_video_id, "staging_invalid")
 
-            target = video.root / "source"
-            backup = video.root / f".source-{uuid4().hex}.backup"
-            moved_existing = False
-            try:
-                if target.exists() or target.is_symlink():
-                    target.replace(backup)
-                    moved_existing = True
-                resolved_staging.replace(target)
-                promoted = self._validate_source_directory(video, target)
-                if promoted is None:
-                    raise self._invalid_source(
-                        validated_video_id,
-                        "promoted_source_invalid",
-                    )
-            except BaseException:
-                self._remove_managed_path(target)
-                if moved_existing and backup.exists():
-                    backup.replace(target)
-                raise
-            else:
-                self._remove_managed_path(backup)
-                return promoted
+    def _promote_source_unlocked(
+        self,
+        video_id: str,
+        staging: Path,
+        *,
+        metadata: YouTubeMetadata,
+        downloaded_at: datetime,
+        audio_extracted_at: datetime,
+    ) -> SourceEntry:
+        if metadata.video_id != video_id:
+            raise self._invalid_source(video_id, "metadata_video_id_mismatch")
+        video = self._find_video_unlocked(video_id)
+        if video is None:
+            raise self._invalid_source(video_id, "video_missing")
+        resolved_staging = self._managed_source_staging(video, staging)
+        source_video = resolved_staging / "source.mp4"
+        source_audio = resolved_staging / "audio.mp3"
+        if not self._is_regular_non_symlink_file(source_video):
+            raise self._invalid_source(video_id, "source_video_invalid")
+        if not self._is_regular_non_symlink_file(source_audio):
+            raise self._invalid_source(video_id, "source_audio_invalid")
+        source_video_size = source_video.stat().st_size
+        source_audio_size = source_audio.stat().st_size
+        if source_video_size <= 0 or source_audio_size <= 0:
+            raise self._invalid_source(video_id, "source_empty")
+        manifest = SourceManifest(
+            video_id=video_id,
+            source_fingerprint=self._sha256_file(source_video),
+            fingerprint_algorithm="sha256",
+            source_video_path=Path("source/source.mp4"),
+            source_video_size=source_video_size,
+            transcription_audio_path=Path("source/audio.mp3"),
+            transcription_audio_size=source_audio_size,
+            downloaded_at=downloaded_at,
+            audio_extracted_at=audio_extracted_at,
+            source_metadata=metadata.model_dump(mode="json"),
+            state=ManifestState.READY,
+        )
+        self.writer.write_json(resolved_staging / "manifest.json", manifest)
+        if self._validate_source_directory(video, resolved_staging) is None:
+            raise self._invalid_source(video_id, "staging_invalid")
+
+        target = video.root / "source"
+        backup = video.root / f".source-{uuid4().hex}.backup"
+        moved_existing = False
+        try:
+            if target.exists() or target.is_symlink():
+                target.replace(backup)
+                moved_existing = True
+            resolved_staging.replace(target)
+            promoted = self._validate_source_directory(video, target)
+            if promoted is None:
+                raise self._invalid_source(video_id, "promoted_source_invalid")
+        except BaseException:
+            self._remove_managed_path(target)
+            if moved_existing and backup.exists():
+                backup.replace(target)
+            raise
+        else:
+            self._remove_managed_path(backup)
+            return promoted
 
     def discard_source_staging(self, video_id: str, staging: Path) -> None:
         validated_video_id = validate_youtube_video_id(video_id)
         with self._video_lock(validated_video_id):
-            video = self._find_video_unlocked(validated_video_id)
-            if video is None:
-                return
-            resolved_staging = self._managed_source_staging(video, staging)
-            self._remove_managed_path(resolved_staging)
+            self._discard_source_staging_unlocked(validated_video_id, staging)
+
+    def _discard_source_staging_unlocked(
+        self,
+        video_id: str,
+        staging: Path,
+    ) -> None:
+        video = self._find_video_unlocked(video_id)
+        if video is None:
+            return
+        resolved_staging = self._managed_source_staging(video, staging)
+        self._remove_managed_path(resolved_staging)
 
     def list_sources(self) -> list[SourceListing]:
         videos_root = self._validated_videos_root()
@@ -449,6 +556,13 @@ class VideoStore:
 
     @contextmanager
     def _video_lock(self, video_id: str) -> Iterator[None]:
+        lock_file = self._acquire_video_lock(video_id)
+        try:
+            yield
+        finally:
+            self._release_video_lock(lock_file)
+
+    def _acquire_video_lock(self, video_id: str) -> BufferedRandom:
         videos_root = self._validated_videos_root(create=True)
         locks_root = videos_root / ".locks"
         if locks_root.is_symlink():
@@ -461,14 +575,22 @@ class VideoStore:
         lock_path = locks_root / f"{video_id}.lock"
         if lock_path.is_symlink() or (lock_path.exists() and not lock_path.is_file()):
             raise self._invalid_store_path(lock_path, "not_regular_file")
-        with lock_path.open("a+b") as lock_file:
+        lock_file = lock_path.open("a+b")
+        try:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-            try:
-                self._validated_videos_root()
-                self._cleanup_stale_staging(video_id)
-                yield
-            finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            self._validated_videos_root()
+            self._cleanup_stale_staging(video_id)
+        except BaseException:
+            lock_file.close()
+            raise
+        return lock_file
+
+    @staticmethod
+    def _release_video_lock(lock_file: BufferedRandom) -> None:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        finally:
+            lock_file.close()
 
     def _validated_videos_root(self, *, create: bool = False) -> Path:
         if create:

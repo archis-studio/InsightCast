@@ -146,6 +146,79 @@ async def test_url_variants_reuse_same_root_and_skip_all_external_work(
 
 
 @pytest.mark.asyncio
+async def test_simultaneous_ingests_share_one_source_transaction(
+    tmp_path: Path,
+) -> None:
+    class PausedYtDlp(FakeYtDlp):
+        def __init__(self) -> None:
+            super().__init__()
+            self.download_started = asyncio.Event()
+            self.finish_download = asyncio.Event()
+
+        async def download_video(self, url: str, destination: Path) -> Path:
+            self.downloads.append((url, destination))
+            self.download_started.set()
+            await self.finish_download.wait()
+            destination.write_bytes(b"video")
+            return destination
+
+    ytdlp = PausedYtDlp()
+    ffmpeg = FakeFfmpeg()
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    engine = SourceEngine(ytdlp=ytdlp, ffmpeg=ffmpeg, video_store=store)
+
+    first_task = asyncio.create_task(
+        engine.ingest(**ingest_kwargs(output_root=store.output_root))
+    )
+    await asyncio.wait_for(ytdlp.download_started.wait(), timeout=5)
+    first_staging = ytdlp.downloads[0][1].parent
+    second_task = asyncio.create_task(
+        engine.ingest(
+            **ingest_kwargs(url=SHARE_URL, output_root=store.output_root)
+        )
+    )
+    try:
+        await asyncio.sleep(0.1)
+        assert first_staging.is_dir()
+        assert len(ytdlp.downloads) == 1
+    finally:
+        ytdlp.finish_download.set()
+
+    first, second = await asyncio.gather(first_task, second_task)
+
+    assert first.source_artifacts == second.source_artifacts
+    assert {first.cache_decision, second.cache_decision} == {"miss", "hit"}
+    assert len(ytdlp.metadata_requests) == 1
+    assert len(ytdlp.downloads) == 1
+    assert len(ffmpeg.extractions) == 1
+    assert list(first.output_dir.glob(".source-*.tmp")) == []
+
+
+@pytest.mark.asyncio
+async def test_cancelled_source_transaction_waiter_does_not_leak_lock(
+    tmp_path: Path,
+) -> None:
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    holder = store.source_transaction(VIDEO_ID)
+    await holder.__aenter__()
+
+    async def wait_for_transaction() -> None:
+        async with store.source_transaction(VIDEO_ID):
+            return None
+
+    waiter = asyncio.create_task(wait_for_transaction())
+    await asyncio.sleep(0.05)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    await holder.__aexit__(None, None, None)
+
+    async with asyncio.timeout(1):
+        async with store.source_transaction(VIDEO_ID):
+            pass
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("corruption", ["size", "hash"])
 async def test_size_or_hash_mismatch_triggers_repair(
     tmp_path: Path,
@@ -198,8 +271,8 @@ async def test_failed_repair_preserves_previously_valid_source(
     class ForceRepairStore(VideoStore):
         force_repair = False
 
-        def load_source(self, video_id: str) -> SourceLookup:
-            lookup = super().load_source(video_id)
+        def _load_source_unlocked(self, video_id: str) -> SourceLookup:
+            lookup = super()._load_source_unlocked(video_id)
             if self.force_repair and lookup.status == "hit":
                 self.force_repair = False
                 return SourceLookup(status="repair")

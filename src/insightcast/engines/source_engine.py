@@ -45,12 +45,14 @@ class SourceEngine:
     ) -> SourceResult:
         del job_id, created_at, output_root, direct
         video_id = extract_youtube_video_id(youtube_url)
-        lookup = self.video_store.load_source(video_id)
-        if lookup.entry is not None:
-            source = lookup.entry
-            metadata = source.metadata
-            cache_decision: Literal["hit", "miss", "repair"] = "hit"
-        else:
+        async with self.video_store.source_transaction(video_id) as transaction:
+            lookup = transaction.load_source()
+            if lookup.entry is not None:
+                return self._result(
+                    source=lookup.entry,
+                    metadata=lookup.entry.metadata,
+                    cache_decision="hit",
+                )
             cache_decision = lookup.status
             metadata = await self.ytdlp.fetch_metadata(youtube_url)
             if metadata.video_id != video_id:
@@ -63,8 +65,8 @@ class SourceEngine:
                     },
                     stage="ingesting",
                 )
-            self.video_store.ensure_video(metadata, youtube_url)
-            staging = self.video_store.create_source_staging(video_id)
+            transaction.ensure_video(metadata, youtube_url)
+            staging = transaction.create_staging()
             try:
                 await self.ytdlp.download_video(youtube_url, staging / "source.mp4")
                 downloaded_at = datetime.now(UTC)
@@ -72,8 +74,7 @@ class SourceEngine:
                     staging / "source.mp4",
                     staging / "audio.mp3",
                 )
-                source = self.video_store.promote_source(
-                    video_id,
+                source = transaction.promote(
                     staging,
                     metadata=metadata,
                     downloaded_at=downloaded_at,
@@ -81,7 +82,7 @@ class SourceEngine:
                 )
             except BaseException:
                 with suppress(InsightCastError):
-                    self.video_store.discard_source_staging(video_id, staging)
+                    transaction.discard_staging(staging)
                 raise
 
         return self._result(
