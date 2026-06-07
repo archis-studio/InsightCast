@@ -22,7 +22,10 @@ from insightcast.domain.models import (
     RenderBatch,
     Transcript,
 )
-from insightcast.infrastructure.transcription.base import TranscriptionSpec
+from insightcast.infrastructure.transcription.base import (
+    TranscriptionSpec,
+    build_transcript_cache_key,
+)
 from insightcast.storage.file_job_writer import FileJobWriter
 from insightcast.storage.video_store import VideoStore
 from insightcast.utils.files import build_render_dir_name, sanitize_filename
@@ -85,6 +88,7 @@ class JobService:
         self.latest_analysis_by_url: dict[str, str] = {}
         self._analysis_options: dict[str, tuple[int, float, float]] = {}
         self._transcripts: dict[str, Transcript] = {}
+        self._transcript_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._source_metadata: dict[str, Any] = {}
         self.processed_work: list[WorkItem] = []
 
@@ -565,7 +569,7 @@ class JobService:
         source: Any,
     ) -> Transcript:
         store = VideoStore(self.output_root, FileJobWriter())
-        lookup = store.load_source(source.metadata.video_id)
+        lookup = await asyncio.to_thread(store.load_source, source.metadata.video_id)
         if lookup.entry is None:
             raise InsightCastError(
                 ErrorCode.SOURCE_CACHE_INVALID,
@@ -580,29 +584,39 @@ class JobService:
             language=self.transcription_client.transcription_language,
             transcript_schema_version=self.transcription_client.transcript_schema_version,
         )
-        cached = store.find_ready_transcript(source.metadata.video_id, spec)
-        if cached is not None:
-            assert job.source_artifacts is not None
-            job.source_artifacts.transcript = cached.transcript_path
-            get_job_logger(job.job_id, job.output_dir).info(
-                "transcript_cache_hit video_id=%s transcript_id=%s cache_key=%s",
-                source.metadata.video_id,
-                cached.manifest.transcript_id,
-                cached.manifest.cache_key,
-            )
-            return cached.transcript
-        transcript = await self._run_stage(
-            job,
-            "transcription",
-            lambda: self.transcription_client.transcribe(
-                source.source_artifacts.source_audio
-            ),
-        )
-        entry = store.write_transcript(
+        cached = await asyncio.to_thread(
+            store.find_ready_transcript,
             source.metadata.video_id,
             spec,
-            transcript,
         )
+        if cached is not None:
+            return self._use_cached_transcript(job, source, cached)
+        cache_key = build_transcript_cache_key(spec)
+        lock = self._transcript_locks.setdefault(
+            (source.metadata.video_id, cache_key),
+            asyncio.Lock(),
+        )
+        async with lock:
+            cached = await asyncio.to_thread(
+                store.find_ready_transcript,
+                source.metadata.video_id,
+                spec,
+            )
+            if cached is not None:
+                return self._use_cached_transcript(job, source, cached)
+            transcript = await self._run_stage(
+                job,
+                "transcription",
+                lambda: self.transcription_client.transcribe(
+                    source.source_artifacts.source_audio
+                ),
+            )
+            entry = await asyncio.to_thread(
+                store.write_transcript,
+                source.metadata.video_id,
+                spec,
+                transcript,
+            )
         assert job.source_artifacts is not None
         job.source_artifacts.transcript = entry.transcript_path
         get_job_logger(job.job_id, job.output_dir).info(
@@ -612,6 +626,22 @@ class JobService:
             entry.manifest.cache_key,
         )
         return entry.transcript
+
+    @staticmethod
+    def _use_cached_transcript(
+        job: AnalysisJob,
+        source: Any,
+        cached: Any,
+    ) -> Transcript:
+        assert job.source_artifacts is not None
+        job.source_artifacts.transcript = cached.transcript_path
+        get_job_logger(job.job_id, job.output_dir).info(
+            "transcript_cache_hit video_id=%s transcript_id=%s cache_key=%s",
+            source.metadata.video_id,
+            cached.manifest.transcript_id,
+            cached.manifest.cache_key,
+        )
+        return cached.transcript
 
     async def _run_stage(
         self,

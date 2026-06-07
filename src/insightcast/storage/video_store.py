@@ -454,7 +454,13 @@ class VideoStore:
             video = self._find_video_unlocked(validated_video_id)
             if video is None:
                 return None
-            return self._find_ready_transcript_unlocked(video, cache_key)
+            return self._find_ready_transcript_unlocked(
+                video,
+                cache_key,
+                spec=spec_or_cache_key
+                if isinstance(spec_or_cache_key, TranscriptionSpec)
+                else None,
+            )
         return None
 
     def write_transcript(
@@ -472,7 +478,11 @@ class VideoStore:
             if video is None:
                 raise self._invalid_source(validated_video_id, "video_missing")
             transcripts_root = self._validated_transcripts_root(video, create=True)
-            existing = self._find_ready_transcript_unlocked(video, cache_key)
+            existing = self._find_ready_transcript_unlocked(
+                video,
+                cache_key,
+                spec=spec,
+            )
             if existing is not None:
                 return existing
             transcript_id = self._transcript_id_for_cache_key(transcripts_root, cache_key)
@@ -664,10 +674,18 @@ class VideoStore:
         self,
         video: VideoEntry,
         cache_key: str,
+        *,
+        spec: TranscriptionSpec | None = None,
     ) -> TranscriptEntry | None:
         for entry in self._list_transcripts_unlocked(video):
-            if entry.manifest.cache_key.lower() == cache_key.lower():
-                return entry
+            if entry.manifest.cache_key.lower() != cache_key.lower():
+                continue
+            if spec is not None and not self._transcript_manifest_matches_spec(
+                entry.manifest,
+                spec,
+            ):
+                continue
+            return entry
         return None
 
     def _validate_transcript_directory(
@@ -693,6 +711,7 @@ class VideoStore:
             or manifest.transcript_id != transcript_dir.name
             or manifest.transcript_path
             != Path("transcripts") / manifest.transcript_id / "transcript.json"
+            or not self._transcript_manifest_cache_key_is_canonical(manifest)
         ):
             return None
         transcript_path = transcript_dir / "transcript.json"
@@ -724,16 +743,43 @@ class VideoStore:
         transcripts_root = video.root / "transcripts"
         if transcripts_root.is_symlink():
             raise self._invalid_store_path(transcripts_root, "symlink")
+        if transcripts_root.exists() and not transcripts_root.is_dir():
+            raise self._invalid_store_path(transcripts_root, "not_directory")
         if create:
             transcripts_root.mkdir(exist_ok=True)
         if not transcripts_root.exists():
             return transcripts_root
-        if not transcripts_root.is_dir():
-            raise self._invalid_store_path(transcripts_root, "not_directory")
         resolved = transcripts_root.resolve()
         if video.root not in resolved.parents:
             raise self._invalid_store_path(transcripts_root, "outside_video_root")
         return resolved
+
+    @staticmethod
+    def _transcript_manifest_matches_spec(
+        manifest: TranscriptManifest,
+        spec: TranscriptionSpec,
+    ) -> bool:
+        return (
+            manifest.source_fingerprint.lower() == spec.source_fingerprint.lower()
+            and manifest.provider == spec.provider
+            and manifest.model == spec.model
+            and manifest.language == spec.language
+            and spec.transcript_schema_version == 1
+        )
+
+    @classmethod
+    def _transcript_manifest_cache_key_is_canonical(
+        cls,
+        manifest: TranscriptManifest,
+    ) -> bool:
+        spec = TranscriptionSpec(
+            source_fingerprint=manifest.source_fingerprint,
+            provider=manifest.provider,
+            model=manifest.model,
+            language=manifest.language,
+            transcript_schema_version=1,
+        )
+        return build_transcript_cache_key(spec).lower() == manifest.cache_key.lower()
 
     def _transcript_id_for_cache_key(
         self,

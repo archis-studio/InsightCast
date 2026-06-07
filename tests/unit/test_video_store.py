@@ -39,6 +39,25 @@ def _ensure_video_process(
         results.put(("ok", str(entry.root)))
 
 
+def _write_transcript_process(
+    output_root: str,
+    text: str,
+    start: Event,
+    results: Queue,
+) -> None:
+    start.wait()
+    try:
+        entry = VideoStore(Path(output_root), FileJobWriter()).write_transcript(
+            VIDEO_ID,
+            transcription_spec(),
+            transcript(text),
+        )
+    except BaseException as exc:
+        results.put(("error", repr(exc)))
+    else:
+        results.put(("ok", entry.transcript.segments[0].text, entry.manifest.transcript_id))
+
+
 def metadata(
     *,
     title: str = "Original Title",
@@ -228,6 +247,21 @@ def test_video_store_write_transcript_returns_existing_ready_without_replacing(
     assert found.transcript.segments[0].text == "Original"
 
 
+def test_find_ready_transcript_skips_manifest_with_matching_key_but_mismatched_identity(
+    tmp_path: Path,
+) -> None:
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    store.ensure_video(metadata(), ORIGINAL_URL)
+    spec = transcription_spec()
+    entry = store.write_transcript(VIDEO_ID, spec, transcript("Original"))
+    payload = json.loads(entry.manifest_path.read_text(encoding="utf-8"))
+    payload["provider"] = "other-provider"
+    entry.manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert store.find_ready_transcript(VIDEO_ID, spec) is None
+    assert store.list_transcripts(VIDEO_ID) == []
+
+
 def test_concurrent_transcript_writers_do_not_replace_existing_ready_entry(
     tmp_path: Path,
 ) -> None:
@@ -250,6 +284,34 @@ def test_concurrent_transcript_writers_do_not_replace_existing_ready_entry(
     assert found is not None
     assert len(set(returned_texts)) == 1
     assert found.transcript.segments[0].text == returned_texts[0]
+    assert len(VideoStore(output_root, FileJobWriter()).list_transcripts(VIDEO_ID)) == 1
+
+
+def test_cross_process_transcript_writers_share_one_ready_entry(tmp_path: Path) -> None:
+    output_root = tmp_path / "outputs"
+    VideoStore(output_root, FileJobWriter()).ensure_video(metadata(), ORIGINAL_URL)
+    context = get_context("spawn")
+    start = context.Event()
+    results = context.Queue()
+    processes = [
+        context.Process(
+            target=_write_transcript_process,
+            args=(str(output_root), text, start, results),
+        )
+        for text in ("Process One", "Process Two")
+    ]
+    for process in processes:
+        process.start()
+
+    start.set()
+    outcomes: list[tuple[str, str, str]] = [results.get(timeout=10) for _ in processes]
+    for process in processes:
+        process.join(timeout=10)
+        assert process.exitcode == 0
+
+    assert [outcome[0] for outcome in outcomes] == ["ok", "ok"]
+    assert len({outcome[1] for outcome in outcomes}) == 1
+    assert len({outcome[2] for outcome in outcomes}) == 1
     assert len(VideoStore(output_root, FileJobWriter()).list_transcripts(VIDEO_ID)) == 1
 
 
@@ -304,16 +366,35 @@ def test_video_store_rejects_external_transcripts_symlink_without_writing_target
     assert list(external.iterdir()) == []
 
 
+def test_video_store_rejects_transcripts_file_with_structured_error(
+    tmp_path: Path,
+) -> None:
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    video = store.ensure_video(metadata(), ORIGINAL_URL)
+    (video.root / "transcripts").write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(InsightCastError) as error:
+        store.write_transcript(VIDEO_ID, transcription_spec(), transcript())
+
+    assert error.value.error_code == ErrorCode.ARTIFACT_PATH_INVALID
+    assert error.value.details["reason"] == "not_directory"
+
+
 def test_video_store_uses_suffixed_transcript_id_for_cache_key_prefix_collision(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = VideoStore(tmp_path / "outputs", FileJobWriter())
     store.ensure_video(metadata(), ORIGINAL_URL)
-    cache_keys = iter(["c" * 64, ("c" * 12) + ("d" * 52)])
+
+    def cache_key_for_spec(spec: TranscriptionSpec) -> str:
+        if spec.source_fingerprint == "a" * 64:
+            return "c" * 64
+        return ("c" * 12) + ("d" * 52)
+
     monkeypatch.setattr(
         "insightcast.storage.video_store.build_transcript_cache_key",
-        lambda _spec: next(cache_keys),
+        cache_key_for_spec,
     )
 
     first = store.write_transcript(VIDEO_ID, transcription_spec(), transcript("First"))

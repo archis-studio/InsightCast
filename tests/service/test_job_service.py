@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -262,6 +263,64 @@ async def test_forced_analysis_reuses_cached_transcript_for_same_source_and_mode
     assert transcriber.calls == [first_artifacts.source_audio]
     assert service._transcripts[first.job_id] == service._transcripts[second.job_id]
     assert curator.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_forced_analyses_share_same_transcription(
+    tmp_path: Path,
+) -> None:
+    class SlowTranscriber(FakeTranscriber):
+        async def transcribe(self, path: Path) -> Transcript:
+            self.calls.append(path)
+            await asyncio.sleep(0.05)
+            return Transcript(
+                language="en",
+                duration_seconds=1200,
+                segments=[
+                    TranscriptSegment(
+                        segment_id="s1",
+                        start_seconds=0,
+                        end_seconds=1200,
+                        text="Shared Transcript",
+                    )
+                ],
+            )
+
+    transcriber = SlowTranscriber()
+    service = JobService(
+        output_root=tmp_path / "outputs",
+        work_root=tmp_path / ".work",
+        source_engine=FakeSource(),
+        transcription_client=transcriber,
+        curator_engine=FakeCurator(),
+        clip_engine=FakeClip(),
+        publish_engine=FakePublish(),
+        writer=FakeWriter(),
+        clock=Clock(),
+        id_factory=IdFactory(),
+    )
+    first = await service.create_analysis_job(
+        "https://youtu.be/abc123DEF_-",
+        force_reanalyze=True,
+    )
+    second = await service.create_analysis_job(
+        "https://youtu.be/abc123DEF_-",
+        force_reanalyze=True,
+    )
+
+    first_work = await service.queue.get()
+    second_work = await service.queue.get()
+    await asyncio.wait_for(
+        asyncio.gather(
+            service.process(first_work),
+            service.process(second_work),
+        ),
+        timeout=2,
+    )
+
+    assert len(transcriber.calls) == 1
+    assert service._transcripts[first.job_id] == service._transcripts[second.job_id]
+    assert service._transcripts[first.job_id].segments[0].text == "Shared Transcript"
 
 
 @pytest.mark.asyncio
