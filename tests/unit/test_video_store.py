@@ -250,3 +250,18 @@ def test_read_manifest_maps_io_failure_to_manifest_invalid(tmp_path: Path) -> No
         "manifest_path": str(path.resolve()),
         "reason": "io",
     }
+
+
+def test_read_manifest_maps_invalid_utf8_to_manifest_invalid(tmp_path: Path) -> None:
+    path = tmp_path / "video.json"
+    path.write_bytes(b'{"title":"\xff"}')
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+
+    with pytest.raises(InsightCastError) as error:
+        store.read_manifest(path, VideoManifest)
+
+    assert error.value.error_code == ErrorCode.MANIFEST_INVALID
+    assert error.value.details == {
+        "manifest_path": str(path.resolve()),
+        "reason": "encoding",
+    }

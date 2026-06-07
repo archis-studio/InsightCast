@@ -113,6 +113,8 @@ class VideoStore:
         resolved = path.expanduser().resolve()
         try:
             raw = resolved.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise self._invalid_manifest(resolved, "encoding") from exc
         except OSError as exc:
             raise self._invalid_manifest(resolved, "io") from exc
 
