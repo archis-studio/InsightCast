@@ -1,7 +1,9 @@
+import asyncio
 import json
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from threading import Event, Thread
 from typing import Any
 
 import pytest
@@ -302,3 +304,104 @@ async def test_failed_initial_download_discards_source_staging(tmp_path: Path) -
     assert video is not None
     assert not (video.root / "source").exists()
     assert list(video.root.glob(".source-*.tmp")) == []
+
+
+def test_create_source_staging_removes_only_crashed_source_staging(
+    tmp_path: Path,
+) -> None:
+    _, _, _, store = make_source_engine(tmp_path)
+    metadata = YouTubeMetadata(
+        video_id=VIDEO_ID,
+        title="Taiwan AI Podcast",
+        duration_seconds=1200,
+        webpage_url=WATCH_URL,
+    )
+    video = store.ensure_video(metadata, WATCH_URL)
+    stale = video.root / f".source-{'a' * 32}.tmp"
+    stale.mkdir()
+    (stale / "partial").write_bytes(b"partial")
+    short = video.root / ".source-short.tmp"
+    short.mkdir()
+    symlink_target = tmp_path / "external-staging"
+    symlink_target.mkdir()
+    symlink = video.root / f".source-{'b' * 32}.tmp"
+    symlink.symlink_to(symlink_target, target_is_directory=True)
+
+    staging = store.create_source_staging(VIDEO_ID)
+
+    assert not stale.exists()
+    assert short.is_dir()
+    assert symlink.is_symlink()
+    assert symlink_target.is_dir()
+    assert staging.is_dir()
+
+
+def test_load_source_waits_for_promotion_and_never_observes_partial_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, _, _, store = make_source_engine(tmp_path)
+
+    first = asyncio.run(
+        engine.ingest(**ingest_kwargs(output_root=store.output_root))
+    )
+    staging = store.create_source_staging(VIDEO_ID)
+    (staging / "source.mp4").write_bytes(b"replacement-video")
+    (staging / "audio.mp3").write_bytes(b"replacement-audio")
+    metadata = first.metadata.model_copy(update={"title": "Replacement"})
+    backup_moved = Event()
+    finish_promotion = Event()
+    load_finished = Event()
+    original_replace = Path.replace
+    lookup_results: list[SourceLookup] = []
+    thread_errors: list[BaseException] = []
+
+    def pause_after_backup(source: Path, target: Path) -> Path:
+        result = original_replace(source, target)
+        if source.name == "source" and target.name.endswith(".backup"):
+            backup_moved.set()
+            if not finish_promotion.wait(timeout=5):
+                raise TimeoutError("promotion test did not resume")
+        return result
+
+    def promote() -> None:
+        try:
+            store.promote_source(
+                VIDEO_ID,
+                staging,
+                metadata=metadata,
+                downloaded_at=CREATED_AT,
+                audio_extracted_at=CREATED_AT,
+            )
+        except BaseException as exc:
+            thread_errors.append(exc)
+
+    def load() -> None:
+        try:
+            lookup_results.append(store.load_source(VIDEO_ID))
+        except BaseException as exc:
+            thread_errors.append(exc)
+        finally:
+            load_finished.set()
+
+    monkeypatch.setattr(Path, "replace", pause_after_backup)
+    promoter = Thread(target=promote)
+    loader = Thread(target=load)
+    promoter.start()
+    assert backup_moved.wait(timeout=5)
+    loader.start()
+    try:
+        assert not load_finished.wait(timeout=0.1)
+    finally:
+        finish_promotion.set()
+        promoter.join(timeout=5)
+        loader.join(timeout=5)
+
+    assert not promoter.is_alive()
+    assert not loader.is_alive()
+    assert thread_errors == []
+    assert len(lookup_results) == 1
+    lookup = lookup_results[0]
+    assert lookup.status == "hit"
+    assert lookup.entry is not None
+    assert lookup.entry.source_video.read_bytes() == b"replacement-video"

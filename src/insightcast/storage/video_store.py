@@ -95,7 +95,10 @@ class VideoStore:
 
     def find_video(self, video_id: str) -> VideoEntry | None:
         validated_video_id = validate_youtube_video_id(video_id)
-        roots = self.matching_video_roots(validated_video_id)
+        return self._find_video_unlocked(validated_video_id)
+
+    def _find_video_unlocked(self, video_id: str) -> VideoEntry | None:
+        roots = self.matching_video_roots(video_id)
         if not roots:
             return None
         if len(roots) > 1:
@@ -110,7 +113,7 @@ class VideoStore:
         root = roots[0]
         manifest_path = self._managed_manifest_path(root)
         manifest = self.read_manifest(manifest_path, VideoManifest)
-        if manifest.video_id != validated_video_id:
+        if manifest.video_id != video_id:
             raise self._invalid_manifest(manifest_path, "video_id_mismatch")
         return VideoEntry(
             root=root,
@@ -125,7 +128,7 @@ class VideoStore:
         video_id = validate_youtube_video_id(metadata.video_id)
         normalized_url = normalize_youtube_url(original_url)
         with self._video_lock(video_id):
-            existing = self.find_video(video_id)
+            existing = self._find_video_unlocked(video_id)
             now = datetime.now(UTC)
             first_seen_at = (
                 now if existing is None else existing.manifest.first_seen_at
@@ -149,7 +152,11 @@ class VideoStore:
 
     def load_source(self, video_id: str) -> SourceLookup:
         validated_video_id = validate_youtube_video_id(video_id)
-        video = self.find_video(validated_video_id)
+        with self._video_lock(validated_video_id):
+            return self._load_source_unlocked(validated_video_id)
+
+    def _load_source_unlocked(self, video_id: str) -> SourceLookup:
+        video = self._find_video_unlocked(video_id)
         if video is None:
             return SourceLookup(status="miss")
         if video.manifest.source_manifest_path != Path("source/manifest.json"):
@@ -165,9 +172,10 @@ class VideoStore:
     def create_source_staging(self, video_id: str) -> Path:
         validated_video_id = validate_youtube_video_id(video_id)
         with self._video_lock(validated_video_id):
-            video = self.find_video(validated_video_id)
+            video = self._find_video_unlocked(validated_video_id)
             if video is None:
                 raise self._invalid_source(validated_video_id, "video_missing")
+            self._cleanup_stale_source_staging(video.root)
             staging = video.root / f".source-{uuid4().hex}.tmp"
             staging.mkdir()
             return staging.resolve()
@@ -185,7 +193,7 @@ class VideoStore:
         if metadata.video_id != validated_video_id:
             raise self._invalid_source(validated_video_id, "metadata_video_id_mismatch")
         with self._video_lock(validated_video_id):
-            video = self.find_video(validated_video_id)
+            video = self._find_video_unlocked(validated_video_id)
             if video is None:
                 raise self._invalid_source(validated_video_id, "video_missing")
             resolved_staging = self._managed_source_staging(video, staging)
@@ -242,7 +250,7 @@ class VideoStore:
     def discard_source_staging(self, video_id: str, staging: Path) -> None:
         validated_video_id = validate_youtube_video_id(video_id)
         with self._video_lock(validated_video_id):
-            video = self.find_video(validated_video_id)
+            video = self._find_video_unlocked(validated_video_id)
             if video is None:
                 return
             resolved_staging = self._managed_source_staging(video, staging)
@@ -286,7 +294,7 @@ class VideoStore:
     def remove_source(self, video_id: str) -> bool:
         validated_video_id = validate_youtube_video_id(video_id)
         with self._video_lock(validated_video_id):
-            video = self.find_video(validated_video_id)
+            video = self._find_video_unlocked(validated_video_id)
             if video is None:
                 return False
             target = video.root / "source"
@@ -499,6 +507,17 @@ class VideoStore:
     def _cleanup_stale_staging(self, video_id: str) -> None:
         pattern = re.compile(rf"^\.{re.escape(video_id)}-[0-9a-f]{{32}}\.tmp$")
         for child in self.videos_root.iterdir():
+            if (
+                pattern.fullmatch(child.name)
+                and not child.is_symlink()
+                and child.is_dir()
+            ):
+                shutil.rmtree(child)
+
+    @staticmethod
+    def _cleanup_stale_source_staging(video_root: Path) -> None:
+        pattern = re.compile(r"^\.source-[0-9a-f]{32}\.tmp$")
+        for child in video_root.iterdir():
             if (
                 pattern.fullmatch(child.name)
                 and not child.is_symlink()
