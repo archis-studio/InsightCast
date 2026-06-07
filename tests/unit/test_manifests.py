@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,8 @@ from insightcast.storage.manifests import (
 )
 
 NOW = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
+LATER = NOW + timedelta(minutes=1)
+LATEST = LATER + timedelta(minutes=1)
 DIGEST = "a" * 64
 UPPER_DIGEST = "A" * 64
 
@@ -372,9 +374,28 @@ def test_failed_manifest_states_accept_structured_errors() -> None:
     RenderManifest(
         **render_values(
             publish_state=PublishState.UPLOAD_FAILED,
+            upload_started_at=LATER,
             upload_error=manifest_error(),
         )
     )
+
+
+@pytest.mark.parametrize(
+    ("model", "values"),
+    [
+        (SourceManifest, source_values(error=manifest_error())),
+        (TranscriptManifest, transcript_values(error=manifest_error())),
+        (AnalysisManifest, analysis_values(error=manifest_error())),
+        (RenderManifest, render_values(render_error=manifest_error())),
+        (RenderManifest, render_values(upload_error=manifest_error())),
+    ],
+)
+def test_successful_manifest_states_reject_stale_errors(
+    model: type[Any],
+    values: dict[str, Any],
+) -> None:
+    with pytest.raises(ValidationError, match="error"):
+        model(**values)
 
 
 @pytest.mark.parametrize("state", [AnalysisState.WAITING_SELECTION, AnalysisState.COMPLETED])
@@ -387,6 +408,12 @@ def test_ready_analysis_states_require_completion_time(state: AnalysisState) -> 
 def test_ready_analysis_states_require_candidate_paths(state: AnalysisState) -> None:
     with pytest.raises(ValidationError, match="candidate_paths"):
         AnalysisManifest(**analysis_values(state=state, candidate_paths={}))
+
+
+@pytest.mark.parametrize("state", [AnalysisState.WAITING_SELECTION, AnalysisState.COMPLETED])
+def test_ready_analysis_candidate_count_matches_paths(state: AnalysisState) -> None:
+    with pytest.raises(ValidationError, match="candidate_count"):
+        AnalysisManifest(**analysis_values(state=state, candidate_count=2))
 
 
 def test_ready_render_requires_completion_time() -> None:
@@ -439,14 +466,20 @@ def test_active_analysis_and_render_states_remain_constructible() -> None:
 
 def test_uploaded_publish_state_requires_remote_identity_and_timestamp() -> None:
     with pytest.raises(ValidationError, match="uploaded"):
-        RenderManifest(**render_values(publish_state=PublishState.UPLOADED))
+        RenderManifest(
+            **render_values(
+                publish_state=PublishState.UPLOADED,
+                upload_started_at=LATER,
+            )
+        )
 
     RenderManifest(
         **render_values(
             publish_state=PublishState.UPLOADED,
             youtube_video_id="remote123",
             youtube_url="https://www.youtube.com/watch?v=remote123",
-            uploaded_at=NOW,
+            upload_started_at=LATER,
+            uploaded_at=LATEST,
         )
     )
 
@@ -468,8 +501,159 @@ def test_non_uploaded_publish_states_reject_uploaded_identity(
         "youtube_url": "https://www.youtube.com/watch?v=remote123",
         "uploaded_at": NOW,
     }
+    if publish_state is not PublishState.NOT_UPLOADED:
+        updates["upload_started_at"] = NOW
     if publish_state is PublishState.UPLOAD_FAILED:
         updates["upload_error"] = manifest_error()
 
     with pytest.raises(ValidationError, match="uploaded"):
         RenderManifest(**render_values(**updates))
+
+
+@pytest.mark.parametrize(
+    "publish_state",
+    [
+        PublishState.UPLOADING,
+        PublishState.UPLOADED,
+        PublishState.UPLOAD_FAILED,
+    ],
+)
+def test_active_publish_states_require_ready_render(
+    publish_state: PublishState,
+) -> None:
+    updates: dict[str, Any] = {
+        "render_state": RenderState.RENDERING,
+        "completed_at": None,
+        "publish_state": publish_state,
+        "upload_started_at": LATER,
+    }
+    if publish_state is PublishState.UPLOADED:
+        updates.update(
+            youtube_video_id="remote123",
+            youtube_url="https://www.youtube.com/watch?v=remote123",
+            uploaded_at=LATEST,
+        )
+    if publish_state is PublishState.UPLOAD_FAILED:
+        updates["upload_error"] = manifest_error()
+
+    with pytest.raises(ValidationError, match="ready"):
+        RenderManifest(**render_values(**updates))
+
+
+@pytest.mark.parametrize(
+    "render_state",
+    [RenderState.QUEUED, RenderState.RENDERING, RenderState.FAILED],
+)
+def test_non_ready_renders_remain_not_uploaded(render_state: RenderState) -> None:
+    updates: dict[str, Any] = {
+        "render_state": render_state,
+        "completed_at": None,
+        "publish_state": PublishState.UPLOADING,
+        "upload_started_at": LATER,
+    }
+    if render_state is RenderState.FAILED:
+        updates["render_error"] = manifest_error()
+
+    with pytest.raises(ValidationError, match="ready"):
+        RenderManifest(**render_values(**updates))
+
+
+@pytest.mark.parametrize(
+    "publish_state",
+    [
+        PublishState.UPLOADING,
+        PublishState.UPLOADED,
+        PublishState.UPLOAD_FAILED,
+    ],
+)
+def test_active_publish_states_require_upload_started_at(
+    publish_state: PublishState,
+) -> None:
+    updates: dict[str, Any] = {"publish_state": publish_state}
+    if publish_state is PublishState.UPLOADED:
+        updates.update(
+            youtube_video_id="remote123",
+            youtube_url="https://www.youtube.com/watch?v=remote123",
+            uploaded_at=LATEST,
+        )
+    if publish_state is PublishState.UPLOAD_FAILED:
+        updates["upload_error"] = manifest_error()
+
+    with pytest.raises(ValidationError, match="upload_started_at"):
+        RenderManifest(**render_values(**updates))
+
+
+def test_not_uploaded_publish_state_rejects_upload_started_at() -> None:
+    with pytest.raises(ValidationError, match="upload_started_at"):
+        RenderManifest(**render_values(upload_started_at=LATER))
+
+
+def test_valid_render_publish_lifecycle_states() -> None:
+    RenderManifest(**render_values())
+    RenderManifest(
+        **render_values(
+            publish_state=PublishState.UPLOADING,
+            upload_started_at=LATER,
+        )
+    )
+    RenderManifest(
+        **render_values(
+            publish_state=PublishState.UPLOADED,
+            upload_started_at=LATER,
+            uploaded_at=LATEST,
+            youtube_video_id="remote123",
+            youtube_url="https://www.youtube.com/watch?v=remote123",
+        )
+    )
+    RenderManifest(
+        **render_values(
+            publish_state=PublishState.UPLOAD_FAILED,
+            upload_started_at=LATER,
+            upload_error=manifest_error(),
+        )
+    )
+    RenderManifest(
+        **render_values(
+            render_state=RenderState.FAILED,
+            publish_state=PublishState.NOT_UPLOADED,
+            completed_at=None,
+            render_error=manifest_error(),
+        )
+    )
+
+
+def test_analysis_completion_timestamp_cannot_precede_creation() -> None:
+    with pytest.raises(ValidationError, match="completed_at"):
+        AnalysisManifest(
+            **analysis_values(completed_at=NOW - timedelta(seconds=1))
+        )
+
+
+def test_render_completion_timestamp_cannot_precede_creation() -> None:
+    with pytest.raises(ValidationError, match="completed_at"):
+        RenderManifest(
+            **render_values(completed_at=NOW - timedelta(seconds=1))
+        )
+
+
+def test_upload_start_cannot_precede_render_completion() -> None:
+    with pytest.raises(ValidationError, match="upload_started_at"):
+        RenderManifest(
+            **render_values(
+                publish_state=PublishState.UPLOADING,
+                upload_started_at=NOW - timedelta(seconds=1),
+            )
+        )
+
+
+def test_uploaded_timestamp_cannot_precede_upload_start() -> None:
+    with pytest.raises(ValidationError, match="uploaded_at"):
+        RenderManifest(
+            **render_values(
+                publish_state=PublishState.UPLOADED,
+                upload_started_at=LATEST,
+                uploaded_at=LATER,
+                youtube_video_id="remote123",
+                youtube_url="https://www.youtube.com/watch?v=remote123",
+            )
+        )

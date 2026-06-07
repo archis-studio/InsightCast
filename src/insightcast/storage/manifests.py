@@ -119,6 +119,8 @@ class SourceManifest(ManifestModel):
     def validate_state(self) -> "SourceManifest":
         if self.state is ManifestState.FAILED and self.error is None:
             raise ValueError("failed source manifests require an error")
+        if self.state is not ManifestState.FAILED and self.error is not None:
+            raise ValueError("non-failed source manifests must not carry an error")
         return self
 
 
@@ -138,6 +140,8 @@ class TranscriptManifest(ManifestModel):
     def validate_state(self) -> "TranscriptManifest":
         if self.state is ManifestState.FAILED and self.error is None:
             raise ValueError("failed transcript manifests require an error")
+        if self.state is not ManifestState.FAILED and self.error is not None:
+            raise ValueError("non-failed transcript manifests must not carry an error")
         return self
 
 
@@ -166,6 +170,10 @@ class AnalysisManifest(ManifestModel):
             raise ValueError("max_duration_seconds must be at least min_duration_seconds")
         if self.state is AnalysisState.FAILED and self.error is None:
             raise ValueError("failed analysis manifests require an error")
+        if self.state is not AnalysisState.FAILED and self.error is not None:
+            raise ValueError("non-failed analysis manifests must not carry an error")
+        if self.completed_at is not None and self.completed_at < self.created_at:
+            raise ValueError("completed_at must not precede created_at")
         if (
             self.state in {AnalysisState.WAITING_SELECTION, AnalysisState.COMPLETED}
             and self.completed_at is None
@@ -176,6 +184,13 @@ class AnalysisManifest(ManifestModel):
             and not self.candidate_paths
         ):
             raise ValueError(f"{self.state} analysis manifests require candidate_paths")
+        if (
+            self.state in {AnalysisState.WAITING_SELECTION, AnalysisState.COMPLETED}
+            and len(self.candidate_paths) != self.candidate_count
+        ):
+            raise ValueError(
+                "candidate_count must equal candidate_paths count for durable analysis states"
+            )
         return self
 
 
@@ -221,12 +236,37 @@ class RenderManifest(ManifestModel):
             raise ValueError("artifact_hashes keys must be a subset of artifacts keys")
         if self.render_state is RenderState.FAILED and self.render_error is None:
             raise ValueError("failed render manifests require render_error")
+        if self.render_state is not RenderState.FAILED and self.render_error is not None:
+            raise ValueError("non-failed render manifests must not carry render_error")
+        if self.completed_at is not None and self.completed_at < self.created_at:
+            raise ValueError("completed_at must not precede created_at")
         if self.render_state is RenderState.READY and self.completed_at is None:
             raise ValueError("ready render manifests require completed_at")
         if self.render_state is RenderState.READY and not self.artifacts:
             raise ValueError("ready render manifests require artifacts")
+        if (
+            self.publish_state is not PublishState.NOT_UPLOADED
+            and self.render_state is not RenderState.READY
+        ):
+            raise ValueError("active publish states require render_state ready")
         if self.publish_state is PublishState.UPLOAD_FAILED and self.upload_error is None:
             raise ValueError("upload-failed render manifests require upload_error")
+        if (
+            self.publish_state is not PublishState.UPLOAD_FAILED
+            and self.upload_error is not None
+        ):
+            raise ValueError("non-failed publish states must not carry upload_error")
+        if self.publish_state is PublishState.NOT_UPLOADED:
+            if self.upload_started_at is not None:
+                raise ValueError("not-uploaded publish state must not carry upload_started_at")
+        elif self.upload_started_at is None:
+            raise ValueError(f"{self.publish_state} publish state requires upload_started_at")
+        if (
+            self.upload_started_at is not None
+            and self.completed_at is not None
+            and self.upload_started_at < self.completed_at
+        ):
+            raise ValueError("upload_started_at must not precede completed_at")
         uploaded_identity = (
             self.uploaded_at,
             self.youtube_video_id,
@@ -239,4 +279,10 @@ class RenderManifest(ManifestModel):
                 )
         elif any(value is not None for value in uploaded_identity):
             raise ValueError("non-uploaded publish states must not carry uploaded identity")
+        if (
+            self.uploaded_at is not None
+            and self.upload_started_at is not None
+            and self.uploaded_at < self.upload_started_at
+        ):
+            raise ValueError("uploaded_at must not precede upload_started_at")
         return self
