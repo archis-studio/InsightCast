@@ -454,12 +454,7 @@ class VideoStore:
             video = self._find_video_unlocked(validated_video_id)
             if video is None:
                 return None
-            for entry in self._list_transcripts_unlocked(video):
-                if (
-                    entry.manifest.state is ManifestState.READY
-                    and entry.manifest.cache_key.lower() == cache_key.lower()
-                ):
-                    return entry
+            return self._find_ready_transcript_unlocked(video, cache_key)
         return None
 
     def write_transcript(
@@ -477,6 +472,9 @@ class VideoStore:
             if video is None:
                 raise self._invalid_source(validated_video_id, "video_missing")
             transcripts_root = self._validated_transcripts_root(video, create=True)
+            existing = self._find_ready_transcript_unlocked(video, cache_key)
+            if existing is not None:
+                return existing
             transcript_id = self._transcript_id_for_cache_key(transcripts_root, cache_key)
             target = transcripts_root / transcript_id
             staging = transcripts_root / f".{transcript_id}-{uuid4().hex}.tmp"
@@ -496,6 +494,12 @@ class VideoStore:
                 self.writer.write_json(staging / "transcript.json", transcript)
                 self.writer.write_json(staging / "manifest.json", manifest)
                 if target.exists() or target.is_symlink():
+                    existing = self._validate_transcript_directory(video, target)
+                    if existing is not None:
+                        if existing.manifest.cache_key.lower() == cache_key.lower():
+                            self._remove_managed_path(staging)
+                            return existing
+                        raise self._invalid_store_path(target, "transcript_id_collision")
                     self._remove_managed_path(target)
                 staging.replace(target)
                 promoted = self._validate_transcript_directory(video, target)
@@ -645,9 +649,7 @@ class VideoStore:
 
     def _list_transcripts_unlocked(self, video: VideoEntry) -> list[TranscriptEntry]:
         transcripts_root = self._validated_transcripts_root(video)
-        if (
-            not transcripts_root.exists()
-        ):
+        if not transcripts_root.exists():
             return []
         entries: list[TranscriptEntry] = []
         for child in sorted(transcripts_root.iterdir()):
@@ -657,6 +659,16 @@ class VideoStore:
             if entry is not None:
                 entries.append(entry)
         return entries
+
+    def _find_ready_transcript_unlocked(
+        self,
+        video: VideoEntry,
+        cache_key: str,
+    ) -> TranscriptEntry | None:
+        for entry in self._list_transcripts_unlocked(video):
+            if entry.manifest.cache_key.lower() == cache_key.lower():
+                return entry
+        return None
 
     def _validate_transcript_directory(
         self,

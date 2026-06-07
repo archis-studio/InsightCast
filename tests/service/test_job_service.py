@@ -297,6 +297,38 @@ async def test_analysis_transcribes_again_when_transcription_model_changes(
 
 
 @pytest.mark.asyncio
+async def test_analysis_transcribes_again_when_transcription_provider_changes(
+    tmp_path: Path,
+) -> None:
+    first_transcriber = FakeTranscriber(provider="openai", model="whisper-1")
+    second_transcriber = FakeTranscriber(provider="local-whisper", model="whisper-1")
+    service = JobService(
+        output_root=tmp_path / "outputs",
+        work_root=tmp_path / ".work",
+        source_engine=FakeSource(),
+        transcription_client=first_transcriber,
+        curator_engine=FakeCurator(),
+        clip_engine=FakeClip(),
+        publish_engine=FakePublish(),
+        writer=FakeWriter(),
+        clock=Clock(),
+        id_factory=IdFactory(),
+    )
+
+    await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+    await service.process(await service.queue.get())
+    service.transcription_client = second_transcriber
+    await service.create_analysis_job(
+        "https://youtu.be/abc123DEF_-",
+        force_reanalyze=True,
+    )
+    await service.process(await service.queue.get())
+
+    assert len(first_transcriber.calls) == 1
+    assert len(second_transcriber.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_analysis_job_stores_resolved_candidate_options(tmp_path: Path) -> None:
     service, _, _ = make_service(tmp_path)
 

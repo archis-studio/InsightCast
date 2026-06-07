@@ -210,6 +210,49 @@ def test_video_store_writes_and_finds_ready_transcript_by_cache_key(
     assert entry.manifest_path == entry.directory / "manifest.json"
 
 
+def test_video_store_write_transcript_returns_existing_ready_without_replacing(
+    tmp_path: Path,
+) -> None:
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    store.ensure_video(metadata(), ORIGINAL_URL)
+    spec = transcription_spec()
+    first = store.write_transcript(VIDEO_ID, spec, transcript("Original"))
+
+    second = store.write_transcript(VIDEO_ID, spec, transcript("Replacement"))
+    found = store.find_ready_transcript(VIDEO_ID, spec)
+
+    assert found is not None
+    assert second == first
+    assert found.directory == first.directory
+    assert found.manifest.created_at == first.manifest.created_at
+    assert found.transcript.segments[0].text == "Original"
+
+
+def test_concurrent_transcript_writers_do_not_replace_existing_ready_entry(
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "outputs"
+    VideoStore(output_root, FileJobWriter()).ensure_video(metadata(), ORIGINAL_URL)
+    spec = transcription_spec()
+    barrier = Barrier(2)
+
+    def write(text: str) -> str:
+        store = VideoStore(output_root, FileJobWriter())
+        barrier.wait()
+        entry = store.write_transcript(VIDEO_ID, spec, transcript(text))
+        return entry.transcript.segments[0].text
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        returned_texts = list(executor.map(write, ["First", "Second"]))
+
+    found = VideoStore(output_root, FileJobWriter()).find_ready_transcript(VIDEO_ID, spec)
+
+    assert found is not None
+    assert len(set(returned_texts)) == 1
+    assert found.transcript.segments[0].text == returned_texts[0]
+    assert len(VideoStore(output_root, FileJobWriter()).list_transcripts(VIDEO_ID)) == 1
+
+
 def test_video_store_lists_transcripts_and_skips_corrupt_or_missing_entries(
     tmp_path: Path,
 ) -> None:
