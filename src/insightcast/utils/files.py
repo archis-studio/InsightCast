@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from insightcast.utils.youtube import validate_youtube_video_id
 
 _SEPARATOR_PATTERN = re.compile(r"[-\s]+")
+_RUN_ID_VALUE_PATTERN = re.compile(r"[A-Za-z0-9_-]{6,}")
 
 
 def sanitize_filename(value: str, *, max_length: int = 80) -> str:
@@ -44,4 +45,8 @@ def build_video_dir_name(video_id: str, title: str) -> str:
 def build_run_id(created_at: datetime, unique_id: str) -> str:
     if created_at.tzinfo is None or created_at.utcoffset() is None:
         raise ValueError("created_at must be timezone-aware")
+    if _RUN_ID_VALUE_PATTERN.fullmatch(unique_id) is None:
+        raise ValueError(
+            "unique_id must contain at least 6 path-safe letters, digits, underscores, or hyphens"
+        )
     return f"{_timestamp(created_at.astimezone(UTC))}-{unique_id[:6]}"

@@ -9,6 +9,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PositiveInt,
+    StringConstraints,
     model_validator,
 )
 
@@ -53,12 +54,16 @@ def validate_relative_path(value: Path) -> Path:
     path = Path(value)
     windows_path = PureWindowsPath(str(value))
     if (
-        path.is_absolute()
+        str(path) in {"", "."}
+        or path.is_absolute()
         or windows_path.is_absolute()
+        or bool(windows_path.drive)
         or ".." in path.parts
         or ".." in windows_path.parts
     ):
-        raise ValueError("persisted paths must be relative paths without '..' traversal")
+        raise ValueError(
+            "persisted paths must be non-empty relative paths without drives or '..' traversal"
+        )
     return path
 
 
@@ -72,6 +77,10 @@ def validate_candidate_id(value: str) -> str:
 
 
 CandidateId = Annotated[str, AfterValidator(validate_candidate_id)]
+Sha256Digest = Annotated[
+    str,
+    StringConstraints(pattern=r"^[0-9A-Fa-f]{64}$"),
+]
 
 
 class ManifestModel(BaseModel):
@@ -94,7 +103,7 @@ class VideoManifest(ManifestModel):
 
 class SourceManifest(ManifestModel):
     video_id: str
-    source_fingerprint: str
+    source_fingerprint: Sha256Digest
     fingerprint_algorithm: Literal["sha256"]
     source_video_path: RelativePath
     source_video_size: int = Field(gt=0)
@@ -106,11 +115,17 @@ class SourceManifest(ManifestModel):
     state: ManifestState
     error: JobError | None = None
 
+    @model_validator(mode="after")
+    def validate_state(self) -> "SourceManifest":
+        if self.state is ManifestState.FAILED and self.error is None:
+            raise ValueError("failed source manifests require an error")
+        return self
+
 
 class TranscriptManifest(ManifestModel):
     transcript_id: str
-    cache_key: str
-    source_fingerprint: str
+    cache_key: Sha256Digest
+    source_fingerprint: Sha256Digest
     provider: str
     model: str
     language: str
@@ -118,6 +133,12 @@ class TranscriptManifest(ManifestModel):
     created_at: AwareDatetime
     state: ManifestState
     error: JobError | None = None
+
+    @model_validator(mode="after")
+    def validate_state(self) -> "TranscriptManifest":
+        if self.state is ManifestState.FAILED and self.error is None:
+            raise ValueError("failed transcript manifests require an error")
+        return self
 
 
 class AnalysisManifest(ManifestModel):
@@ -140,9 +161,21 @@ class AnalysisManifest(ManifestModel):
     error: JobError | None = None
 
     @model_validator(mode="after")
-    def validate_duration_bounds(self) -> "AnalysisManifest":
+    def validate_invariants(self) -> "AnalysisManifest":
         if self.max_duration_seconds < self.min_duration_seconds:
             raise ValueError("max_duration_seconds must be at least min_duration_seconds")
+        if self.state is AnalysisState.FAILED and self.error is None:
+            raise ValueError("failed analysis manifests require an error")
+        if (
+            self.state in {AnalysisState.WAITING_SELECTION, AnalysisState.COMPLETED}
+            and self.completed_at is None
+        ):
+            raise ValueError(f"{self.state} analysis manifests require completed_at")
+        if (
+            self.state in {AnalysisState.WAITING_SELECTION, AnalysisState.COMPLETED}
+            and not self.candidate_paths
+        ):
+            raise ValueError(f"{self.state} analysis manifests require candidate_paths")
         return self
 
 
@@ -154,12 +187,12 @@ class RenderManifest(ManifestModel):
     candidate_id: CandidateId | None = None
     start_seconds: float = Field(ge=0)
     end_seconds: float = Field(gt=0)
-    source_fingerprint: str
+    source_fingerprint: Sha256Digest
     transcript_id: str
     render_config: dict[str, Any]
     artifacts: dict[str, RelativePath]
     artifact_sizes: dict[str, PositiveInt]
-    artifact_hashes: dict[str, str] = Field(default_factory=dict)
+    artifact_hashes: dict[str, Sha256Digest] = Field(default_factory=dict)
     created_at: AwareDatetime
     completed_at: AwareDatetime | None
     render_state: RenderState
@@ -173,7 +206,7 @@ class RenderManifest(ManifestModel):
     upload_error: JobError | None = None
 
     @model_validator(mode="after")
-    def validate_render_identity_and_timing(self) -> "RenderManifest":
+    def validate_invariants(self) -> "RenderManifest":
         if self.end_seconds <= self.start_seconds:
             raise ValueError("end_seconds must be later than start_seconds")
         if self.kind is RenderKind.CANDIDATE:
@@ -181,4 +214,29 @@ class RenderManifest(ManifestModel):
                 raise ValueError("candidate renders require analysis_id and candidate_id")
         elif self.analysis_id is not None or self.candidate_id is not None:
             raise ValueError("custom renders must omit analysis_id and candidate_id")
+        artifact_keys = set(self.artifacts)
+        if set(self.artifact_sizes) != artifact_keys:
+            raise ValueError("artifact_sizes keys must exactly match artifacts keys")
+        if not set(self.artifact_hashes) <= artifact_keys:
+            raise ValueError("artifact_hashes keys must be a subset of artifacts keys")
+        if self.render_state is RenderState.FAILED and self.render_error is None:
+            raise ValueError("failed render manifests require render_error")
+        if self.render_state is RenderState.READY and self.completed_at is None:
+            raise ValueError("ready render manifests require completed_at")
+        if self.render_state is RenderState.READY and not self.artifacts:
+            raise ValueError("ready render manifests require artifacts")
+        if self.publish_state is PublishState.UPLOAD_FAILED and self.upload_error is None:
+            raise ValueError("upload-failed render manifests require upload_error")
+        uploaded_identity = (
+            self.uploaded_at,
+            self.youtube_video_id,
+            self.youtube_url,
+        )
+        if self.publish_state is PublishState.UPLOADED:
+            if any(value is None for value in uploaded_identity):
+                raise ValueError(
+                    "uploaded publish state requires uploaded_at, youtube_video_id, and youtube_url"
+                )
+        elif any(value is not None for value in uploaded_identity):
+            raise ValueError("non-uploaded publish states must not carry uploaded identity")
         return self

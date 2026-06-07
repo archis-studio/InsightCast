@@ -54,3 +54,12 @@ def test_run_id_normalizes_timezone_aware_datetime_to_utc() -> None:
 def test_run_id_rejects_naive_datetime() -> None:
     with pytest.raises(ValueError, match="timezone-aware"):
         build_run_id(datetime(2026, 6, 7, 12, 0), "abcdef1234")
+
+
+@pytest.mark.parametrize(
+    "unique_id",
+    ["abcde", "../abcdef", "abc/def", r"abc\def", "abc def", "abc.def"],
+)
+def test_run_id_rejects_short_or_path_unsafe_unique_ids(unique_id: str) -> None:
+    with pytest.raises(ValueError, match="unique_id"):
+        build_run_id(datetime(2026, 6, 7, 12, 0, tzinfo=UTC), unique_id)
