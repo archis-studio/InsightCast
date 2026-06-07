@@ -9,9 +9,11 @@ import pytest
 
 from insightcast.core.exceptions import InsightCastError
 from insightcast.domain.enums import ErrorCode
+from insightcast.domain.models import Transcript, TranscriptSegment
+from insightcast.infrastructure.transcription.base import TranscriptionSpec
 from insightcast.infrastructure.ytdlp_client import YouTubeMetadata
 from insightcast.storage.file_job_writer import FileJobWriter
-from insightcast.storage.manifests import VideoManifest
+from insightcast.storage.manifests import ManifestState, TranscriptManifest, VideoManifest
 from insightcast.storage.video_store import VideoStore
 
 VIDEO_ID = "abc123DEF_-"
@@ -53,6 +55,31 @@ def metadata(
         webpage_url=f"https://www.youtube.com/watch?v={VIDEO_ID}",
         tags=[],
     )
+
+
+def transcript(text: str = "Transcript") -> Transcript:
+    return Transcript(
+        language="en",
+        duration_seconds=10,
+        segments=[
+            TranscriptSegment(
+                segment_id="s1",
+                start_seconds=0,
+                end_seconds=10,
+                text=text,
+            )
+        ],
+    )
+
+
+def transcription_spec(**updates: object) -> TranscriptionSpec:
+    values = {
+        "source_fingerprint": "a" * 64,
+        "provider": "openai",
+        "model": "whisper-1",
+    }
+    values.update(updates)
+    return TranscriptionSpec(**values)
 
 
 def test_video_store_resolves_output_and_videos_roots(tmp_path: Path) -> None:
@@ -161,6 +188,101 @@ def test_find_video_returns_typed_entry_for_one_root(tmp_path: Path) -> None:
     assert found.root == created.root
     assert isinstance(found.manifest, VideoManifest)
     assert found.manifest == created.manifest
+
+
+def test_video_store_writes_and_finds_ready_transcript_by_cache_key(
+    tmp_path: Path,
+) -> None:
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    store.ensure_video(metadata(), ORIGINAL_URL)
+    spec = transcription_spec()
+
+    entry = store.write_transcript(VIDEO_ID, spec, transcript("Cached"))
+    found = store.find_ready_transcript(VIDEO_ID, spec)
+
+    assert found is not None
+    assert found.directory == entry.directory
+    assert found.manifest.cache_key == entry.manifest.cache_key
+    assert found.manifest.transcript_id == f"tx-{entry.manifest.cache_key[:12]}"
+    assert found.manifest.state is ManifestState.READY
+    assert found.transcript.segments[0].text == "Cached"
+    assert entry.transcript_path == entry.directory / "transcript.json"
+    assert entry.manifest_path == entry.directory / "manifest.json"
+
+
+def test_video_store_lists_transcripts_and_skips_corrupt_or_missing_entries(
+    tmp_path: Path,
+) -> None:
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    video = store.ensure_video(metadata(), ORIGINAL_URL)
+    ready = store.write_transcript(VIDEO_ID, transcription_spec(), transcript("Ready"))
+    corrupt_dir = video.root / "transcripts" / "tx-corrupt"
+    corrupt_dir.mkdir(parents=True)
+    (corrupt_dir / "manifest.json").write_text("{bad json", encoding="utf-8")
+    missing_dir = video.root / "transcripts" / "tx-missing"
+    missing_dir.mkdir()
+    store.writer.write_json(
+        missing_dir / "manifest.json",
+        TranscriptManifest(
+            transcript_id="tx-missing",
+            cache_key="b" * 64,
+            source_fingerprint="b" * 64,
+            provider="openai",
+            model="whisper-1",
+            language="en",
+            transcript_path=Path("transcripts/tx-missing/transcript.json"),
+            created_at=ready.manifest.created_at,
+            state=ManifestState.READY,
+        ),
+    )
+
+    entries = store.list_transcripts(VIDEO_ID)
+
+    assert [entry.manifest.cache_key for entry in entries] == [ready.manifest.cache_key]
+    assert store.find_ready_transcript(
+        VIDEO_ID,
+        transcription_spec(source_fingerprint="b" * 64),
+    ) is None
+
+
+def test_video_store_rejects_external_transcripts_symlink_without_writing_target(
+    tmp_path: Path,
+) -> None:
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    video = store.ensure_video(metadata(), ORIGINAL_URL)
+    external = tmp_path / "external-transcripts"
+    external.mkdir()
+    (video.root / "transcripts").symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(InsightCastError) as error:
+        store.write_transcript(VIDEO_ID, transcription_spec(), transcript())
+
+    assert error.value.error_code == ErrorCode.ARTIFACT_PATH_INVALID
+    assert list(external.iterdir()) == []
+
+
+def test_video_store_uses_suffixed_transcript_id_for_cache_key_prefix_collision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    store.ensure_video(metadata(), ORIGINAL_URL)
+    cache_keys = iter(["c" * 64, ("c" * 12) + ("d" * 52)])
+    monkeypatch.setattr(
+        "insightcast.storage.video_store.build_transcript_cache_key",
+        lambda _spec: next(cache_keys),
+    )
+
+    first = store.write_transcript(VIDEO_ID, transcription_spec(), transcript("First"))
+    second = store.write_transcript(
+        VIDEO_ID,
+        transcription_spec(source_fingerprint="b" * 64),
+        transcript("Second"),
+    )
+
+    assert first.manifest.transcript_id == "tx-" + ("c" * 12)
+    assert second.manifest.transcript_id == "tx-" + ("c" * 12) + "-1"
+    assert store.find_ready_transcript(VIDEO_ID, second.manifest.cache_key) == second
 
 
 def test_find_video_rejects_manifest_identity_mismatch(tmp_path: Path) -> None:

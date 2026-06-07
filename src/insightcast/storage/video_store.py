@@ -18,6 +18,11 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from insightcast.core.exceptions import InsightCastError
 from insightcast.domain.enums import ErrorCode
+from insightcast.domain.models import Transcript
+from insightcast.infrastructure.transcription.base import (
+    TranscriptionSpec,
+    build_transcript_cache_key,
+)
 from insightcast.infrastructure.ytdlp_client import YouTubeMetadata
 from insightcast.storage.file_job_writer import FileJobWriter
 from insightcast.storage.manifests import (
@@ -25,6 +30,7 @@ from insightcast.storage.manifests import (
     ManifestModel,
     ManifestState,
     SourceManifest,
+    TranscriptManifest,
     VideoManifest,
     validate_relative_path,
 )
@@ -68,6 +74,17 @@ class SourceListing(BaseModel):
     source_size: int
     audio_size: int
     modified_at: datetime
+
+
+class TranscriptEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    root: Path
+    directory: Path
+    transcript_path: Path
+    manifest_path: Path
+    manifest: TranscriptManifest
+    transcript: Transcript
 
 
 class SourceTransaction:
@@ -426,6 +443,77 @@ class VideoStore:
             self._remove_managed_path(target)
             return True
 
+    def find_ready_transcript(
+        self,
+        video_id: str,
+        spec_or_cache_key: TranscriptionSpec | str,
+    ) -> TranscriptEntry | None:
+        validated_video_id = validate_youtube_video_id(video_id)
+        cache_key = self._transcript_cache_key(spec_or_cache_key)
+        with self._video_lock(validated_video_id):
+            video = self._find_video_unlocked(validated_video_id)
+            if video is None:
+                return None
+            for entry in self._list_transcripts_unlocked(video):
+                if (
+                    entry.manifest.state is ManifestState.READY
+                    and entry.manifest.cache_key.lower() == cache_key.lower()
+                ):
+                    return entry
+        return None
+
+    def write_transcript(
+        self,
+        video_id: str,
+        spec: TranscriptionSpec,
+        transcript: Transcript,
+        *,
+        created_at: datetime | None = None,
+    ) -> TranscriptEntry:
+        validated_video_id = validate_youtube_video_id(video_id)
+        cache_key = build_transcript_cache_key(spec)
+        with self._video_lock(validated_video_id):
+            video = self._find_video_unlocked(validated_video_id)
+            if video is None:
+                raise self._invalid_source(validated_video_id, "video_missing")
+            transcripts_root = self._validated_transcripts_root(video, create=True)
+            transcript_id = self._transcript_id_for_cache_key(transcripts_root, cache_key)
+            target = transcripts_root / transcript_id
+            staging = transcripts_root / f".{transcript_id}-{uuid4().hex}.tmp"
+            manifest = TranscriptManifest(
+                transcript_id=transcript_id,
+                cache_key=cache_key,
+                source_fingerprint=spec.source_fingerprint,
+                provider=spec.provider,
+                model=spec.model,
+                language=spec.language,
+                transcript_path=Path("transcripts") / transcript_id / "transcript.json",
+                created_at=created_at or datetime.now(UTC),
+                state=ManifestState.READY,
+            )
+            staging.mkdir()
+            try:
+                self.writer.write_json(staging / "transcript.json", transcript)
+                self.writer.write_json(staging / "manifest.json", manifest)
+                if target.exists() or target.is_symlink():
+                    self._remove_managed_path(target)
+                staging.replace(target)
+                promoted = self._validate_transcript_directory(video, target)
+                if promoted is None:
+                    raise self._invalid_manifest(target / "manifest.json", "validation")
+                return promoted
+            except BaseException:
+                self._remove_managed_path(staging)
+                raise
+
+    def list_transcripts(self, video_id: str) -> list[TranscriptEntry]:
+        validated_video_id = validate_youtube_video_id(video_id)
+        with self._video_lock(validated_video_id):
+            video = self._find_video_unlocked(validated_video_id)
+            if video is None:
+                return []
+            return self._list_transcripts_unlocked(video)
+
     def clear_sources(self) -> int:
         videos_root = self._validated_videos_root()
         if not videos_root.exists():
@@ -554,6 +642,118 @@ class VideoStore:
             manifest=manifest,
             metadata=metadata,
         )
+
+    def _list_transcripts_unlocked(self, video: VideoEntry) -> list[TranscriptEntry]:
+        transcripts_root = self._validated_transcripts_root(video)
+        if (
+            not transcripts_root.exists()
+        ):
+            return []
+        entries: list[TranscriptEntry] = []
+        for child in sorted(transcripts_root.iterdir()):
+            if child.name.startswith("."):
+                continue
+            entry = self._validate_transcript_directory(video, child)
+            if entry is not None:
+                entries.append(entry)
+        return entries
+
+    def _validate_transcript_directory(
+        self,
+        video: VideoEntry,
+        directory: Path,
+    ) -> TranscriptEntry | None:
+        transcript_dir = directory.expanduser().absolute()
+        transcripts_root = video.root / "transcripts"
+        if (
+            transcript_dir.is_symlink()
+            or not transcript_dir.is_dir()
+            or transcript_dir.parent.resolve() != transcripts_root.resolve()
+        ):
+            return None
+        manifest_path = transcript_dir / "manifest.json"
+        try:
+            manifest = self.read_manifest(manifest_path, TranscriptManifest)
+        except InsightCastError:
+            return None
+        if (
+            manifest.state is not ManifestState.READY
+            or manifest.transcript_id != transcript_dir.name
+            or manifest.transcript_path
+            != Path("transcripts") / manifest.transcript_id / "transcript.json"
+        ):
+            return None
+        transcript_path = transcript_dir / "transcript.json"
+        if not self._is_regular_non_symlink_file(transcript_path):
+            return None
+        try:
+            transcript = Transcript.model_validate_json(
+                transcript_path.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeDecodeError, ValidationError, TypeError, ValueError):
+            return None
+        if transcript.language != manifest.language:
+            return None
+        return TranscriptEntry(
+            root=video.root,
+            directory=transcript_dir.resolve(),
+            transcript_path=transcript_path.resolve(),
+            manifest_path=manifest_path.resolve(),
+            manifest=manifest,
+            transcript=transcript,
+        )
+
+    def _validated_transcripts_root(
+        self,
+        video: VideoEntry,
+        *,
+        create: bool = False,
+    ) -> Path:
+        transcripts_root = video.root / "transcripts"
+        if transcripts_root.is_symlink():
+            raise self._invalid_store_path(transcripts_root, "symlink")
+        if create:
+            transcripts_root.mkdir(exist_ok=True)
+        if not transcripts_root.exists():
+            return transcripts_root
+        if not transcripts_root.is_dir():
+            raise self._invalid_store_path(transcripts_root, "not_directory")
+        resolved = transcripts_root.resolve()
+        if video.root not in resolved.parents:
+            raise self._invalid_store_path(transcripts_root, "outside_video_root")
+        return resolved
+
+    def _transcript_id_for_cache_key(
+        self,
+        transcripts_root: Path,
+        cache_key: str,
+    ) -> str:
+        base = f"tx-{cache_key[:12]}"
+        suffix = 0
+        while True:
+            transcript_id = base if suffix == 0 else f"{base}-{suffix}"
+            candidate = transcripts_root / transcript_id
+            if not candidate.exists() and not candidate.is_symlink():
+                return transcript_id
+            try:
+                manifest = self.read_manifest(
+                    candidate / "manifest.json",
+                    TranscriptManifest,
+                )
+            except InsightCastError:
+                suffix += 1
+                continue
+            if manifest.cache_key.lower() == cache_key.lower():
+                return transcript_id
+            suffix += 1
+
+    @staticmethod
+    def _transcript_cache_key(spec_or_cache_key: TranscriptionSpec | str) -> str:
+        if isinstance(spec_or_cache_key, TranscriptionSpec):
+            return build_transcript_cache_key(spec_or_cache_key)
+        if re.fullmatch(r"[0-9A-Fa-f]{64}", spec_or_cache_key) is None:
+            raise ValueError("transcript cache key must be a SHA-256 hex digest")
+        return spec_or_cache_key
 
     def _managed_source_staging(
         self,

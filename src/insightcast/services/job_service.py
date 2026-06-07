@@ -22,6 +22,9 @@ from insightcast.domain.models import (
     RenderBatch,
     Transcript,
 )
+from insightcast.infrastructure.transcription.base import TranscriptionSpec
+from insightcast.storage.file_job_writer import FileJobWriter
+from insightcast.storage.video_store import VideoStore
 from insightcast.utils.files import build_render_dir_name, sanitize_filename
 from insightcast.utils.youtube import normalize_youtube_url
 
@@ -290,18 +293,12 @@ class JobService:
             self._log_source_cache(job, source)
             self._source_metadata[job_id] = source.metadata
             self._set_status(job, JobStatus.TRANSCRIBING, "Transcribing English audio.")
-            transcript = await self._run_stage(
+            transcript = await self._load_or_create_transcript(
                 job,
-                "transcription",
-                lambda: self.transcription_client.transcribe(
-                    source.source_artifacts.source_audio
-                ),
+                source,
             )
             self._transcripts[job_id] = transcript
             analysis_dir = job.output_dir / "analysis"
-            transcript_path = analysis_dir / "transcript.json"
-            self.writer.write_json(transcript_path, transcript)
-            job.source_artifacts.transcript = transcript_path.resolve()
 
             self._set_status(job, JobStatus.CURATING, "Selecting candidate idea arcs.")
             candidate_count, minimum, maximum = self._analysis_options[job_id]
@@ -561,6 +558,60 @@ class JobService:
             source.source_artifacts.source_video,
             source.source_artifacts.source_audio,
         )
+
+    async def _load_or_create_transcript(
+        self,
+        job: AnalysisJob,
+        source: Any,
+    ) -> Transcript:
+        store = VideoStore(self.output_root, FileJobWriter())
+        lookup = store.load_source(source.metadata.video_id)
+        if lookup.entry is None:
+            raise InsightCastError(
+                ErrorCode.SOURCE_CACHE_INVALID,
+                "Managed source is required before transcript caching.",
+                details={"video_id": source.metadata.video_id},
+                stage="transcribing",
+            )
+        spec = TranscriptionSpec(
+            source_fingerprint=lookup.entry.manifest.source_fingerprint,
+            provider=self.transcription_client.transcription_provider,
+            model=self.transcription_client.transcription_model,
+            language=self.transcription_client.transcription_language,
+            transcript_schema_version=self.transcription_client.transcript_schema_version,
+        )
+        cached = store.find_ready_transcript(source.metadata.video_id, spec)
+        if cached is not None:
+            assert job.source_artifacts is not None
+            job.source_artifacts.transcript = cached.transcript_path
+            get_job_logger(job.job_id, job.output_dir).info(
+                "transcript_cache_hit video_id=%s transcript_id=%s cache_key=%s",
+                source.metadata.video_id,
+                cached.manifest.transcript_id,
+                cached.manifest.cache_key,
+            )
+            return cached.transcript
+        transcript = await self._run_stage(
+            job,
+            "transcription",
+            lambda: self.transcription_client.transcribe(
+                source.source_artifacts.source_audio
+            ),
+        )
+        entry = store.write_transcript(
+            source.metadata.video_id,
+            spec,
+            transcript,
+        )
+        assert job.source_artifacts is not None
+        job.source_artifacts.transcript = entry.transcript_path
+        get_job_logger(job.job_id, job.output_dir).info(
+            "transcript_cache_miss video_id=%s transcript_id=%s cache_key=%s",
+            source.metadata.video_id,
+            entry.manifest.transcript_id,
+            entry.manifest.cache_key,
+        )
+        return entry.transcript
 
     async def _run_stage(
         self,

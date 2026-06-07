@@ -20,6 +20,7 @@ from insightcast.engines.source_engine import SourceResult
 from insightcast.infrastructure.ytdlp_client import YouTubeMetadata
 from insightcast.services.job_service import JobService, WorkKind
 from insightcast.storage.file_job_writer import FileJobWriter
+from insightcast.storage.video_store import VideoStore
 
 
 class Clock:
@@ -57,30 +58,56 @@ class FakeWriter:
 
 class FakeSource:
     async def ingest(self, **kwargs: object) -> SourceResult:
-        output_dir = (
-            Path(kwargs["output_root"]) / "videos" / "abc123DEF_-_source"
-        ).resolve()
-        source_dir = output_dir / "source"
-        source_dir.mkdir(parents=True, exist_ok=True)
-        (source_dir / "source.mp4").write_bytes(b"video")
-        (source_dir / "audio.mp3").write_bytes(b"audio")
+        store = VideoStore(Path(kwargs["output_root"]), FileJobWriter())
+        metadata = YouTubeMetadata(
+            video_id="abc123DEF_-",
+            title="Source",
+            duration_seconds=1200,
+            webpage_url=str(kwargs["youtube_url"]),
+        )
+        async with store.source_transaction("abc123DEF_-") as transaction:
+            lookup = transaction.load_source()
+            if lookup.entry is None:
+                transaction.ensure_video(metadata, str(kwargs["youtube_url"]))
+                staging = transaction.create_staging()
+                (staging / "source.mp4").write_bytes(b"video")
+                (staging / "audio.mp3").write_bytes(b"audio")
+                source = transaction.promote(
+                    staging,
+                    metadata=metadata,
+                    downloaded_at=datetime(2026, 6, 6, 14, 30, tzinfo=UTC),
+                    audio_extracted_at=datetime(2026, 6, 6, 14, 31, tzinfo=UTC),
+                )
+                cache_decision = "miss"
+            else:
+                source = lookup.entry
+                cache_decision = "hit"
         return SourceResult(
-            output_dir=output_dir,
-            metadata=YouTubeMetadata(
-                video_id="abc123DEF_-",
-                title="Source",
-                duration_seconds=1200,
-                webpage_url=str(kwargs["youtube_url"]),
-            ),
+            output_dir=source.root,
+            metadata=metadata,
             source_artifacts=SourceArtifacts(
-                source_video=source_dir / "source.mp4",
-                source_audio=source_dir / "audio.mp3",
+                source_video=source.source_video,
+                source_audio=source.source_audio,
             ),
+            cache_decision=cache_decision,
         )
 
 
 class FakeTranscriber:
+    def __init__(
+        self,
+        *,
+        provider: str = "openai",
+        model: str = "whisper-1",
+    ) -> None:
+        self.transcription_provider = provider
+        self.transcription_model = model
+        self.transcription_language = "en"
+        self.transcript_schema_version = 1
+        self.calls: list[Path] = []
+
     async def transcribe(self, _path: Path) -> Transcript:
+        self.calls.append(_path)
         return Transcript(
             language="en",
             duration_seconds=1200,
@@ -201,6 +228,72 @@ async def test_analysis_pipeline_stops_at_waiting_selection(tmp_path: Path) -> N
     assert stored.status == JobStatus.WAITING_SELECTION
     assert [item.candidate_id for item in stored.candidates] == ["A", "B"]
     assert curator.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_forced_analysis_reuses_cached_transcript_for_same_source_and_model(
+    tmp_path: Path,
+) -> None:
+    transcriber = FakeTranscriber(model="whisper-1")
+    curator = FakeCurator()
+    service = JobService(
+        output_root=tmp_path / "outputs",
+        work_root=tmp_path / ".work",
+        source_engine=FakeSource(),
+        transcription_client=transcriber,
+        curator_engine=curator,
+        clip_engine=FakeClip(),
+        publish_engine=FakePublish(),
+        writer=FakeWriter(),
+        clock=Clock(),
+        id_factory=IdFactory(),
+    )
+
+    first = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+    await service.process(await service.queue.get())
+    second = await service.create_analysis_job(
+        "https://youtu.be/abc123DEF_-",
+        force_reanalyze=True,
+    )
+    await service.process(await service.queue.get())
+
+    first_artifacts = service.get_analysis_job(first.job_id).source_artifacts
+    assert first_artifacts is not None
+    assert transcriber.calls == [first_artifacts.source_audio]
+    assert service._transcripts[first.job_id] == service._transcripts[second.job_id]
+    assert curator.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_analysis_transcribes_again_when_transcription_model_changes(
+    tmp_path: Path,
+) -> None:
+    first_transcriber = FakeTranscriber(model="whisper-1")
+    second_transcriber = FakeTranscriber(model="gpt-4o-mini-transcribe")
+    service = JobService(
+        output_root=tmp_path / "outputs",
+        work_root=tmp_path / ".work",
+        source_engine=FakeSource(),
+        transcription_client=first_transcriber,
+        curator_engine=FakeCurator(),
+        clip_engine=FakeClip(),
+        publish_engine=FakePublish(),
+        writer=FakeWriter(),
+        clock=Clock(),
+        id_factory=IdFactory(),
+    )
+
+    await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+    await service.process(await service.queue.get())
+    service.transcription_client = second_transcriber
+    await service.create_analysis_job(
+        "https://youtu.be/abc123DEF_-",
+        force_reanalyze=True,
+    )
+    await service.process(await service.queue.get())
+
+    assert len(first_transcriber.calls) == 1
+    assert len(second_transcriber.calls) == 1
 
 
 @pytest.mark.asyncio
