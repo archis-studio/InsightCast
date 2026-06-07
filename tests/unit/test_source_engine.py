@@ -1,5 +1,6 @@
 import asyncio
 import json
+import shutil
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -90,6 +91,33 @@ def ingest_kwargs(
         "output_root": output_root,
         "direct": False,
     }
+
+
+async def create_promoted_source(
+    store: VideoStore,
+    *,
+    metadata: YouTubeMetadata | None = None,
+    source_bytes: bytes = b"video",
+    audio_bytes: bytes = b"audio",
+) -> SourceLookup:
+    resolved_metadata = metadata or YouTubeMetadata(
+        video_id=VIDEO_ID,
+        title="Taiwan AI Podcast",
+        duration_seconds=1200,
+        webpage_url=WATCH_URL,
+    )
+    async with store.source_transaction(VIDEO_ID) as transaction:
+        transaction.ensure_video(resolved_metadata, WATCH_URL)
+        staging = transaction.create_staging()
+        (staging / "source.mp4").write_bytes(source_bytes)
+        (staging / "audio.mp3").write_bytes(audio_bytes)
+        transaction.promote(
+            staging,
+            metadata=resolved_metadata,
+            downloaded_at=CREATED_AT,
+            audio_extracted_at=CREATED_AT,
+        )
+        return transaction.load_source()
 
 
 @pytest.mark.asyncio
@@ -400,13 +428,25 @@ def test_create_source_staging_removes_only_crashed_source_staging(
     symlink = video.root / f".source-{'b' * 32}.tmp"
     symlink.symlink_to(symlink_target, target_is_directory=True)
 
-    staging = store.create_source_staging(VIDEO_ID)
+    async def create_staging() -> Path:
+        async with store.source_transaction(VIDEO_ID) as transaction:
+            return transaction.create_staging()
+
+    staging = asyncio.run(create_staging())
 
     assert not stale.exists()
     assert short.is_dir()
     assert symlink.is_symlink()
     assert symlink_target.is_dir()
     assert staging.is_dir()
+
+
+def test_source_staging_mutation_is_transaction_only(tmp_path: Path) -> None:
+    _, _, _, store = make_source_engine(tmp_path)
+
+    assert not hasattr(store, "create_source_staging")
+    assert not hasattr(store, "promote_source")
+    assert not hasattr(store, "discard_source_staging")
 
 
 def test_load_source_waits_for_promotion_and_never_observes_partial_state(
@@ -418,9 +458,6 @@ def test_load_source_waits_for_promotion_and_never_observes_partial_state(
     first = asyncio.run(
         engine.ingest(**ingest_kwargs(output_root=store.output_root))
     )
-    staging = store.create_source_staging(VIDEO_ID)
-    (staging / "source.mp4").write_bytes(b"replacement-video")
-    (staging / "audio.mp3").write_bytes(b"replacement-audio")
     metadata = first.metadata.model_copy(update={"title": "Replacement"})
     backup_moved = Event()
     finish_promotion = Event()
@@ -439,13 +476,20 @@ def test_load_source_waits_for_promotion_and_never_observes_partial_state(
 
     def promote() -> None:
         try:
-            store.promote_source(
-                VIDEO_ID,
-                staging,
-                metadata=metadata,
-                downloaded_at=CREATED_AT,
-                audio_extracted_at=CREATED_AT,
-            )
+            async def run() -> None:
+                async with store.source_transaction(VIDEO_ID) as transaction:
+                    transaction.ensure_video(metadata, WATCH_URL)
+                    staging = transaction.create_staging()
+                    (staging / "source.mp4").write_bytes(b"replacement-video")
+                    (staging / "audio.mp3").write_bytes(b"replacement-audio")
+                    transaction.promote(
+                        staging,
+                        metadata=metadata,
+                        downloaded_at=CREATED_AT,
+                        audio_extracted_at=CREATED_AT,
+                    )
+
+            asyncio.run(run())
         except BaseException as exc:
             thread_errors.append(exc)
 
@@ -478,3 +522,41 @@ def test_load_source_waits_for_promotion_and_never_observes_partial_state(
     assert lookup.status == "hit"
     assert lookup.entry is not None
     assert lookup.entry.source_video.read_bytes() == b"replacement-video"
+
+
+@pytest.mark.asyncio
+async def test_source_transaction_restores_valid_backup_when_source_missing(
+    tmp_path: Path,
+) -> None:
+    _, _, _, store = make_source_engine(tmp_path)
+    lookup = await create_promoted_source(store)
+    assert lookup.entry is not None
+    source_dir = lookup.entry.directory
+    backup = source_dir.parent / f".source-{'c' * 32}.backup"
+    source_dir.replace(backup)
+
+    recovered = store.load_source(VIDEO_ID)
+
+    assert recovered.status == "hit"
+    assert recovered.entry is not None
+    assert recovered.entry.source_video.read_bytes() == b"video"
+    assert recovered.entry.directory.name == "source"
+    assert not backup.exists()
+
+
+@pytest.mark.asyncio
+async def test_source_transaction_removes_backup_when_current_source_is_valid(
+    tmp_path: Path,
+) -> None:
+    _, _, _, store = make_source_engine(tmp_path)
+    lookup = await create_promoted_source(store)
+    assert lookup.entry is not None
+    backup = lookup.entry.root / f".source-{'d' * 32}.backup"
+    shutil.copytree(lookup.entry.directory, backup)
+
+    validated = store.load_source(VIDEO_ID)
+
+    assert validated.status == "hit"
+    assert validated.entry is not None
+    assert validated.entry.directory == lookup.entry.directory
+    assert not backup.exists()

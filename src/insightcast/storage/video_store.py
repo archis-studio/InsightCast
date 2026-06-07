@@ -5,6 +5,7 @@ import json
 import re
 import shutil
 import stat
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -76,10 +77,8 @@ class SourceTransaction:
         self._lock_file: BufferedRandom | None = None
 
     async def __aenter__(self) -> "SourceTransaction":
-        self._lock_file = await asyncio.to_thread(
-            self.store._acquire_video_lock,
-            self.video_id,
-        )
+        self._lock_file = await self._acquire_lock_cancellation_safe()
+        self.store._recover_source_backup_unlocked(self.video_id)
         return self
 
     async def __aexit__(
@@ -95,6 +94,7 @@ class SourceTransaction:
 
     def load_source(self) -> SourceLookup:
         self._require_active()
+        self.store._recover_source_backup_unlocked(self.video_id)
         return self.store._load_source_unlocked(self.video_id)
 
     def ensure_video(
@@ -138,6 +138,46 @@ class SourceTransaction:
     def _require_active(self) -> None:
         if self._lock_file is None:
             raise RuntimeError("source transaction is not active")
+
+    async def _acquire_lock_cancellation_safe(self) -> BufferedRandom:
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[BufferedRandom] = loop.create_future()
+        cancelled = threading.Event()
+
+        def worker() -> None:
+            lock_file: BufferedRandom | None = None
+            try:
+                lock_file = self.store._acquire_video_lock(self.video_id)
+            except BaseException as exc:
+                loop.call_soon_threadsafe(deliver_exception, exc)
+                return
+            loop.call_soon_threadsafe(deliver_lock, lock_file)
+
+        def deliver_lock(lock_file: BufferedRandom) -> None:
+            if cancelled.is_set() or future.cancelled():
+                self.store._release_video_lock(lock_file)
+                return
+            future.set_result(lock_file)
+
+        def deliver_exception(exc: BaseException) -> None:
+            if cancelled.is_set() or future.cancelled():
+                return
+            future.set_exception(exc)
+
+        thread = threading.Thread(
+            target=worker,
+            name=f"insightcast-source-lock-{self.video_id}",
+            daemon=True,
+        )
+        thread.start()
+        try:
+            return await future
+        except asyncio.CancelledError:
+            cancelled.set()
+            if future.done() and not future.cancelled():
+                self.store._release_video_lock(future.result())
+            future.cancel()
+            raise
 
 
 class VideoStore:
@@ -237,6 +277,7 @@ class VideoStore:
             return self._load_source_unlocked(validated_video_id)
 
     def _load_source_unlocked(self, video_id: str) -> SourceLookup:
+        self._recover_source_backup_unlocked(video_id)
         video = self._find_video_unlocked(video_id)
         if video is None:
             return SourceLookup(status="miss")
@@ -250,11 +291,6 @@ class VideoStore:
             return SourceLookup(status="repair")
         return SourceLookup(status="hit", entry=entry)
 
-    def create_source_staging(self, video_id: str) -> Path:
-        validated_video_id = validate_youtube_video_id(video_id)
-        with self._video_lock(validated_video_id):
-            return self._create_source_staging_unlocked(validated_video_id)
-
     def _create_source_staging_unlocked(self, video_id: str) -> Path:
         video = self._find_video_unlocked(video_id)
         if video is None:
@@ -263,27 +299,6 @@ class VideoStore:
         staging = video.root / f".source-{uuid4().hex}.tmp"
         staging.mkdir()
         return staging.resolve()
-
-    def promote_source(
-        self,
-        video_id: str,
-        staging: Path,
-        *,
-        metadata: YouTubeMetadata,
-        downloaded_at: datetime,
-        audio_extracted_at: datetime,
-    ) -> SourceEntry:
-        validated_video_id = validate_youtube_video_id(video_id)
-        if metadata.video_id != validated_video_id:
-            raise self._invalid_source(validated_video_id, "metadata_video_id_mismatch")
-        with self._video_lock(validated_video_id):
-            return self._promote_source_unlocked(
-                validated_video_id,
-                staging,
-                metadata=metadata,
-                downloaded_at=downloaded_at,
-                audio_extracted_at=audio_extracted_at,
-            )
 
     def _promote_source_unlocked(
         self,
@@ -346,11 +361,6 @@ class VideoStore:
         else:
             self._remove_managed_path(backup)
             return promoted
-
-    def discard_source_staging(self, video_id: str, staging: Path) -> None:
-        validated_video_id = validate_youtube_video_id(video_id)
-        with self._video_lock(validated_video_id):
-            self._discard_source_staging_unlocked(validated_video_id, staging)
 
     def _discard_source_staging_unlocked(
         self,
@@ -646,6 +656,38 @@ class VideoStore:
                 and child.is_dir()
             ):
                 shutil.rmtree(child)
+
+    def _recover_source_backup_unlocked(self, video_id: str) -> None:
+        video = self._find_video_unlocked(video_id)
+        if video is None:
+            return
+        source_dir = video.root / "source"
+        backups = self._source_backups(video.root)
+        if self._validate_source_directory(video, source_dir) is not None:
+            for backup in backups:
+                self._remove_managed_path(backup)
+            return
+        if source_dir.exists() or source_dir.is_symlink():
+            return
+        for backup in backups:
+            if self._validate_source_directory(video, backup) is not None:
+                backup.replace(source_dir)
+                for leftover in self._source_backups(video.root):
+                    self._remove_managed_path(leftover)
+                return
+
+    @staticmethod
+    def _source_backups(video_root: Path) -> list[Path]:
+        pattern = re.compile(r"^\.source-[0-9a-f]{32}\.backup$")
+        return [
+            child
+            for child in sorted(video_root.iterdir())
+            if (
+                pattern.fullmatch(child.name)
+                and not child.is_symlink()
+                and child.is_dir()
+            )
+        ]
 
     @staticmethod
     def _sha256_file(path: Path) -> str:

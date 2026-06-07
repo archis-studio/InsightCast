@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -19,17 +20,21 @@ def populate(output_dir: Path) -> None:
         duration_seconds=1200,
         webpage_url=f"https://www.youtube.com/watch?v={VIDEO_ID}",
     )
-    store.ensure_video(metadata, metadata.webpage_url)
-    staging = store.create_source_staging(VIDEO_ID)
-    (staging / "source.mp4").write_bytes(b"video")
-    (staging / "audio.mp3").write_bytes(b"audio")
-    store.promote_source(
-        VIDEO_ID,
-        staging,
-        metadata=metadata,
-        downloaded_at=datetime(2026, 6, 7, tzinfo=UTC),
-        audio_extracted_at=datetime(2026, 6, 7, tzinfo=UTC),
-    )
+
+    async def create_source() -> None:
+        async with store.source_transaction(VIDEO_ID) as transaction:
+            transaction.ensure_video(metadata, metadata.webpage_url)
+            staging = transaction.create_staging()
+            (staging / "source.mp4").write_bytes(b"video")
+            (staging / "audio.mp3").write_bytes(b"audio")
+            transaction.promote(
+                staging,
+                metadata=metadata,
+                downloaded_at=datetime(2026, 6, 7, tzinfo=UTC),
+                audio_extracted_at=datetime(2026, 6, 7, tzinfo=UTC),
+            )
+
+    asyncio.run(create_source())
 
 
 def test_cache_list_reports_validated_entry(
