@@ -1,4 +1,3 @@
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, status
@@ -16,8 +15,6 @@ from insightcast.api.schemas import (
     RenderCreateRequest,
     ResolvedCandidateOptions,
 )
-from insightcast.core.exceptions import InsightCastError
-from insightcast.domain.enums import ErrorCode
 from insightcast.domain.models import (
     AnalysisJob,
     CandidateSelectionRequest,
@@ -34,14 +31,27 @@ ERROR_RESPONSES = {
 
 def _render_artifacts(batch: RenderBatch) -> dict[str, Any]:
     return {
-        candidate_id: result.artifacts.model_dump(mode="json")
+        candidate_id: {
+            **result.artifacts.model_dump(mode="json"),
+            "render_id": batch.render_id,
+            "manifest_path": result.manifest_path,
+        }
         for candidate_id, result in batch.candidate_results.items()
         if result.artifacts is not None
     }
 
 
 def _job_artifacts(job: AnalysisJob) -> dict[str, Any]:
-    artifacts: dict[str, Any] = {}
+    artifacts: dict[str, Any] = {
+        key: value
+        for key, value in {
+            "video_id": job.video_id,
+            "analysis_id": job.analysis_id,
+            "transcript_id": job.transcript_id,
+            "manifest_path": job.manifest_path,
+        }.items()
+        if value is not None
+    }
     if job.source_artifacts is not None:
         artifacts["source"] = job.source_artifacts.model_dump(mode="json")
     rendered = {
@@ -177,38 +187,4 @@ async def list_renders(
             if _render_artifacts(batch)
         },
         render_batches=batches,
-    )
-
-
-@router.post(
-    "/{job_id}/youtube-uploads",
-    response_model=ErrorResponse,
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
-    summary="Validate artifacts for a future YouTube upload",
-    responses=ERROR_RESPONSES,
-)
-async def upload_analysis_stub(
-    job_id: str,
-    service: JobServiceDependency,
-) -> ErrorResponse:
-    job = service.get_analysis_job(job_id)
-    for batch in reversed(job.render_batches):
-        for result in batch.candidate_results.values():
-            if result.artifacts is None:
-                continue
-            video = Path(result.artifacts.burned_video)
-            metadata = Path(result.artifacts.youtube_metadata)
-            if video.exists() and metadata.exists():
-                raise InsightCastError(
-                    ErrorCode.UPLOAD_NOT_IMPLEMENTED,
-                    "YouTube uploading is not implemented in the MVP.",
-                    details={
-                        "burned_video": str(video.resolve()),
-                        "youtube_metadata": str(metadata.resolve()),
-                    },
-                )
-    raise InsightCastError(
-        ErrorCode.VIDEO_RENDER_FAILED,
-        "No publishable rendered video and metadata were found.",
-        details={"job_id": job_id},
     )

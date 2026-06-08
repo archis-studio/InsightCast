@@ -36,10 +36,14 @@ def test_openapi_documents_all_operations_descriptions_examples_and_errors(
         "/api/v1/analysis-jobs/{job_id}/renders",
         "/api/v1/direct-render-jobs",
         "/api/v1/direct-render-jobs/{job_id}",
-        "/api/v1/analysis-jobs/{job_id}/youtube-uploads",
-        "/api/v1/direct-render-jobs/{job_id}/youtube-uploads",
+        "/api/v1/videos/{video_id}",
+        "/api/v1/videos/{video_id}/analyses",
+        "/api/v1/videos/{video_id}/renders",
+        "/api/v1/videos/{video_id}/renders/{render_id}/youtube-uploads",
     }
     assert expected_paths <= set(schema["paths"])
+    assert "/api/v1/analysis-jobs/{job_id}/youtube-uploads" not in schema["paths"]
+    assert "/api/v1/direct-render-jobs/{job_id}/youtube-uploads" not in schema["paths"]
     analysis_schema = schema["components"]["schemas"]["AnalysisJobCreateRequest"]
     assert analysis_schema["properties"]["youtube_url"]["description"]
     assert analysis_schema["properties"]["candidate_count"]["examples"] == [2]

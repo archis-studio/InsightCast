@@ -1,4 +1,3 @@
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, status
@@ -23,9 +22,19 @@ ERROR_RESPONSES = {
 
 
 def _artifacts(job: DirectRenderJob) -> dict[str, Any]:
+    identity: dict[str, Any] = {
+        key: value
+        for key, value in {
+            "video_id": job.video_id,
+            "render_id": job.render_id,
+            "transcript_id": job.transcript_id,
+            "manifest_path": job.manifest_path,
+        }.items()
+        if value is not None
+    }
     if job.artifacts is None:
-        return {}
-    return job.artifacts.model_dump(mode="json")
+        return identity
+    return {**identity, **job.artifacts.model_dump(mode="json")}
 
 
 @router.post(
@@ -80,40 +89,4 @@ async def get_direct_render_job(
         artifacts=_artifacts(job),
         created_at=job.created_at,
         updated_at=job.updated_at,
-    )
-
-
-@router.post(
-    "/{job_id}/youtube-uploads",
-    response_model=ErrorResponse,
-    status_code=status.HTTP_501_NOT_IMPLEMENTED,
-    summary="Validate artifacts for a future YouTube upload",
-    responses=ERROR_RESPONSES,
-)
-async def upload_direct_stub(
-    job_id: str,
-    service: JobServiceDependency,
-) -> ErrorResponse:
-    job = service.get_direct_render_job(job_id)
-    if job.artifacts is None:
-        raise InsightCastError(
-            ErrorCode.VIDEO_RENDER_FAILED,
-            "No publishable rendered video and metadata were found.",
-            details={"job_id": job_id},
-        )
-    video = Path(job.artifacts.burned_video)
-    metadata = Path(job.artifacts.youtube_metadata)
-    if not video.exists() or not metadata.exists():
-        raise InsightCastError(
-            ErrorCode.VIDEO_RENDER_FAILED,
-            "Rendered video or metadata file is missing.",
-            details={"burned_video": str(video), "youtube_metadata": str(metadata)},
-        )
-    raise InsightCastError(
-        ErrorCode.UPLOAD_NOT_IMPLEMENTED,
-        "YouTube uploading is not implemented in the MVP.",
-        details={
-            "burned_video": str(video.resolve()),
-            "youtube_metadata": str(metadata.resolve()),
-        },
     )

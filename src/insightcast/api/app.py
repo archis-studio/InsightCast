@@ -12,7 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from openai import OpenAI
 
-from insightcast.api.routes import analysis_jobs, direct_render_jobs, health
+from insightcast.api.routes import analysis_jobs, direct_render_jobs, health, videos
 from insightcast.core.config import Settings, get_settings
 from insightcast.core.exceptions import InsightCastError
 from insightcast.domain.enums import ErrorCode
@@ -143,6 +143,8 @@ def create_app(
             ErrorCode.INVALID_TIME_RANGE: 400,
             ErrorCode.CANDIDATE_NOT_FOUND: 400,
             ErrorCode.INVALID_JOB_STATE: 409,
+            ErrorCode.RENDER_NOT_FOUND: 404,
+            ErrorCode.RENDER_NOT_PUBLISHABLE: 409,
         }.get(exc.error_code, 500)
         return JSONResponse(
             status_code=status_code,
@@ -173,6 +175,7 @@ def create_app(
     app.include_router(health.router)
     app.include_router(analysis_jobs.router)
     app.include_router(direct_render_jobs.router)
+    app.include_router(videos.router)
     return app
 
 

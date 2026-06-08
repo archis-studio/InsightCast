@@ -565,6 +565,35 @@ class VideoStore:
                 return []
             return self._list_transcripts_unlocked(video)
 
+    def list_analyses(self, video_id: str) -> list[AnalysisEntry]:
+        validated_video_id = validate_youtube_video_id(video_id)
+        with self._video_lock(validated_video_id):
+            video = self._find_video_unlocked(validated_video_id)
+            if video is None:
+                return []
+            analyses_root = video.root / "analyses"
+            if (
+                analyses_root.is_symlink()
+                or not analyses_root.exists()
+                or not analyses_root.is_dir()
+            ):
+                return []
+            entries: list[AnalysisEntry] = []
+            for directory in sorted(analyses_root.iterdir()):
+                if directory.name.startswith("."):
+                    continue
+                entry = self._validate_analysis_directory(video, directory)
+                if entry is not None:
+                    entries.append(entry)
+            return sorted(
+                entries,
+                key=lambda entry: (
+                    entry.manifest.created_at,
+                    entry.manifest.analysis_id,
+                ),
+                reverse=True,
+            )
+
     def analysis_dir(self, video_id: str, analysis_id: str) -> Path:
         validated_video_id = validate_youtube_video_id(video_id)
         video = self.find_video(validated_video_id)
@@ -851,6 +880,62 @@ class VideoStore:
             return None
         return max(entries, key=lambda entry: (entry.manifest.created_at, entry.manifest.render_id))
 
+    def list_publishable_renders(self, video_id: str) -> list[RenderEntry]:
+        entries = [
+            entry
+            for entry in self._list_render_entries(video_id, require_artifacts=False)
+            if entry.manifest.render_state is RenderState.READY
+            and entry.artifacts is not None
+        ]
+        return sorted(
+            entries,
+            key=lambda entry: (entry.manifest.created_at, entry.manifest.render_id),
+            reverse=True,
+        )
+
+    def resolve_publishable_render(
+        self,
+        video_id: str,
+        render_id: str,
+    ) -> RenderEntry:
+        validated_render_id = self._validate_run_id(render_id)
+        matches = [
+            entry
+            for entry in self._list_render_entries(video_id, require_artifacts=False)
+            if entry.manifest.render_id == validated_render_id
+        ]
+        if not matches:
+            raise InsightCastError(
+                ErrorCode.RENDER_NOT_FOUND,
+                "The requested render does not exist for this video.",
+                details={"video_id": video_id, "render_id": validated_render_id},
+            )
+        if len(matches) > 1:
+            raise InsightCastError(
+                ErrorCode.STORAGE_CONFLICT,
+                "Multiple renders exist with the same render ID.",
+                details={
+                    "video_id": video_id,
+                    "render_id": validated_render_id,
+                    "paths": [str(entry.directory) for entry in matches],
+                },
+            )
+        entry = matches[0]
+        if (
+            entry.manifest.render_state is not RenderState.READY
+            or entry.artifacts is None
+        ):
+            raise InsightCastError(
+                ErrorCode.RENDER_NOT_PUBLISHABLE,
+                "Render is not ready for publishing.",
+                details={
+                    "video_id": video_id,
+                    "render_id": validated_render_id,
+                    "render_state": entry.manifest.render_state.value,
+                },
+            )
+        return entry
+
     def _render_artifacts(
         self,
         directory: Path,
@@ -881,6 +966,53 @@ class VideoStore:
             burned_video=resolved["video"],
             youtube_metadata=resolved["youtube_metadata"],
         )
+
+    def _list_render_entries(
+        self,
+        video_id: str,
+        *,
+        require_artifacts: bool,
+    ) -> list[RenderEntry]:
+        validated_video_id = validate_youtube_video_id(video_id)
+        with self._video_lock(validated_video_id):
+            video = self._find_video_unlocked(validated_video_id)
+            if video is None:
+                return []
+            directories: list[Path] = []
+            analyses_root = video.root / "analyses"
+            if (
+                not analyses_root.is_symlink()
+                and analyses_root.exists()
+                and analyses_root.is_dir()
+            ):
+                for renders_root in analyses_root.glob("*/candidates/[A-Z]/renders"):
+                    if renders_root.is_symlink() or not renders_root.is_dir():
+                        continue
+                    directories.extend(
+                        child
+                        for child in renders_root.iterdir()
+                        if not child.name.startswith(".")
+                    )
+            custom_root = video.root / "renders" / "custom"
+            if (
+                not custom_root.is_symlink()
+                and custom_root.exists()
+                and custom_root.is_dir()
+            ):
+                directories.extend(
+                    child for child in custom_root.iterdir() if not child.name.startswith(".")
+                )
+
+            entries: list[RenderEntry] = []
+            for directory in sorted(directories):
+                entry = self._validate_render_directory(
+                    video,
+                    directory,
+                    require_artifacts=require_artifacts,
+                )
+                if entry is not None:
+                    entries.append(entry)
+            return entries
 
     def clear_sources(self) -> int:
         videos_root = self._validated_videos_root()
@@ -1086,6 +1218,108 @@ class VideoStore:
             manifest_path=manifest_path.resolve(),
             manifest=manifest,
             transcript=transcript,
+        )
+
+    def _validate_analysis_directory(
+        self,
+        video: VideoEntry,
+        directory: Path,
+    ) -> AnalysisEntry | None:
+        analyses_root = video.root / "analyses"
+        analysis_dir = directory.expanduser().absolute()
+        if (
+            analysis_dir.is_symlink()
+            or not analysis_dir.is_dir()
+            or analysis_dir.parent.resolve() != analyses_root.resolve()
+        ):
+            return None
+        if video.root not in analysis_dir.resolve().parents:
+            return None
+        try:
+            analysis_id = self._validate_run_id(analysis_dir.name)
+            manifest = self.read_manifest(analysis_dir / "manifest.json", AnalysisManifest)
+        except (InsightCastError, ValueError):
+            return None
+        if (
+            manifest.video_id != video.manifest.video_id
+            or manifest.analysis_id != analysis_id
+            or manifest.candidates_path
+            != Path("analyses") / analysis_id / "candidates.json"
+        ):
+            return None
+        candidates_path = video.root / manifest.candidates_path
+        if not self._is_regular_non_symlink_file(candidates_path):
+            return None
+        candidate_paths: dict[str, Path] = {}
+        for candidate_id, relative in manifest.candidate_paths.items():
+            expected = (
+                Path("analyses")
+                / analysis_id
+                / "candidates"
+                / candidate_id
+            )
+            candidate_dir = self.resolve_relative(video.root, relative)
+            candidate_path = candidate_dir / "candidate.json"
+            if relative != expected or not self._is_regular_non_symlink_file(candidate_path):
+                return None
+            candidate_paths[candidate_id] = candidate_path
+        return AnalysisEntry(
+            root=video.root,
+            directory=analysis_dir.resolve(),
+            manifest_path=(analysis_dir / "manifest.json").resolve(),
+            candidates_path=candidates_path.resolve(),
+            candidate_paths=candidate_paths,
+            manifest=manifest,
+        )
+
+    def _validate_render_directory(
+        self,
+        video: VideoEntry,
+        directory: Path,
+        *,
+        require_artifacts: bool,
+    ) -> RenderEntry | None:
+        render_dir = directory.expanduser().absolute()
+        if render_dir.is_symlink() or not render_dir.is_dir():
+            return None
+        if video.root not in render_dir.resolve().parents:
+            return None
+        try:
+            render_id = self._validate_run_id(render_dir.name)
+            manifest = self.read_manifest(render_dir / "manifest.json", RenderManifest)
+        except (InsightCastError, ValueError):
+            return None
+        if manifest.render_id != render_id:
+            return None
+        if manifest.kind is RenderKind.CANDIDATE:
+            if (
+                manifest.analysis_id is None
+                or manifest.candidate_id is None
+                or render_dir.parent.name != "renders"
+                or render_dir.parent.parent.name != manifest.candidate_id
+                or render_dir.parent.parent.parent.name != "candidates"
+                or render_dir.parent.parent.parent.parent.name != manifest.analysis_id
+            ):
+                return None
+        elif (
+            render_dir.parent.name != "custom"
+            or render_dir.parent.parent.name != "renders"
+            or render_dir.parent.parent.parent.resolve() != video.root
+        ):
+            return None
+        artifacts: RenderArtifacts | None = None
+        if manifest.render_state is RenderState.READY:
+            try:
+                artifacts = self._render_artifacts(render_dir, manifest)
+            except InsightCastError:
+                if require_artifacts:
+                    raise
+        return RenderEntry(
+            root=video.root,
+            directory=render_dir.resolve(),
+            manifest_path=(render_dir / "manifest.json").resolve(),
+            manifest=manifest,
+            artifacts=artifacts,
         )
 
     def _validated_transcripts_root(

@@ -121,7 +121,10 @@ def test_analysis_routes_queue_get_render_and_list(tmp_path: Path) -> None:
 
     assert created.status_code == 202
     assert created.json()["job_id"] == "analysis-1"
-    assert created.json()["artifacts"] == {}
+    assert created.json()["artifacts"] == {
+        "video_id": "abc123DEF_-",
+        "analysis_id": "20260606-000000-analys",
+    }
     assert service.created[0]["candidate_count"] == 2
     assert fetched.status_code == 200
     assert fetched.json()["status"] == "WAITING_SELECTION"
