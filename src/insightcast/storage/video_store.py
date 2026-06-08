@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from insightcast.core.exceptions import InsightCastError
 from insightcast.domain.enums import ErrorCode
-from insightcast.domain.models import Transcript
+from insightcast.domain.models import Candidate, JobError, Transcript
 from insightcast.infrastructure.transcription.base import (
     TranscriptionSpec,
     build_transcript_cache_key,
@@ -27,6 +27,8 @@ from insightcast.infrastructure.ytdlp_client import YouTubeMetadata
 from insightcast.storage.file_job_writer import FileJobWriter
 from insightcast.storage.manifests import (
     SCHEMA_VERSION,
+    AnalysisManifest,
+    AnalysisState,
     ManifestModel,
     ManifestState,
     SourceManifest,
@@ -85,6 +87,17 @@ class TranscriptEntry(BaseModel):
     manifest_path: Path
     manifest: TranscriptManifest
     transcript: Transcript
+
+
+class AnalysisEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    root: Path
+    directory: Path
+    manifest_path: Path
+    candidates_path: Path
+    candidate_paths: dict[str, Path]
+    manifest: AnalysisManifest
 
 
 class SourceTransaction:
@@ -533,6 +546,99 @@ class VideoStore:
                 return []
             return self._list_transcripts_unlocked(video)
 
+    def analysis_dir(self, video_id: str, analysis_id: str) -> Path:
+        validated_video_id = validate_youtube_video_id(video_id)
+        video = self.find_video(validated_video_id)
+        if video is None:
+            return (
+                self.videos_root
+                / validated_video_id
+                / "analyses"
+                / self._validate_run_id(analysis_id)
+            ).resolve()
+        return (video.root / "analyses" / self._validate_run_id(analysis_id)).resolve()
+
+    def write_analysis(
+        self,
+        *,
+        video_id: str,
+        analysis_id: str,
+        operation_id: str,
+        created_at: datetime,
+        completed_at: datetime | None,
+        normalized_source_url: str,
+        transcript_id: str,
+        curator_model: str,
+        prompt_version: str,
+        candidate_count: int,
+        min_duration_seconds: float,
+        max_duration_seconds: float,
+        candidates: list[Candidate],
+        state: AnalysisState,
+        log_path: Path,
+        error: JobError | None = None,
+    ) -> AnalysisEntry:
+        validated_video_id = validate_youtube_video_id(video_id)
+        validated_analysis_id = self._validate_run_id(analysis_id)
+        with self._video_lock(validated_video_id):
+            video = self._find_video_unlocked(validated_video_id)
+            if video is None:
+                raise self._invalid_source(validated_video_id, "video_missing")
+            analysis_dir = self._validated_analysis_dir(
+                video,
+                validated_analysis_id,
+                create=True,
+            )
+            relative_analysis_dir = Path("analyses") / validated_analysis_id
+            candidate_paths = {
+                candidate.candidate_id.upper(): relative_analysis_dir
+                / "candidates"
+                / candidate.candidate_id.upper()
+                for candidate in candidates
+            }
+            manifest = AnalysisManifest(
+                analysis_id=validated_analysis_id,
+                operation_id=operation_id,
+                created_at=created_at,
+                completed_at=completed_at,
+                normalized_source_url=normalized_source_url,
+                video_id=validated_video_id,
+                transcript_id=transcript_id,
+                curator_model=curator_model,
+                prompt_version=prompt_version,
+                candidate_count=candidate_count,
+                min_duration_seconds=min_duration_seconds,
+                max_duration_seconds=max_duration_seconds,
+                state=state,
+                candidates_path=relative_analysis_dir / "candidates.json",
+                candidate_paths=candidate_paths,
+                log_path=log_path,
+                error=error,
+            )
+            candidates_path = analysis_dir / "candidates.json"
+            self.writer.write_json(candidates_path, {"candidates": candidates})
+            absolute_candidate_paths: dict[str, Path] = {}
+            for candidate in candidates:
+                candidate_id = candidate.candidate_id.upper()
+                candidate_path = (
+                    analysis_dir / "candidates" / candidate_id / "candidate.json"
+                )
+                self.writer.write_json(
+                    candidate_path,
+                    candidate.model_dump(exclude={"duration_seconds"}),
+                )
+                absolute_candidate_paths[candidate_id] = candidate_path.resolve()
+            manifest_path = analysis_dir / "manifest.json"
+            self.writer.write_json(manifest_path, manifest)
+            return AnalysisEntry(
+                root=video.root,
+                directory=analysis_dir,
+                manifest_path=manifest_path.resolve(),
+                candidates_path=candidates_path.resolve(),
+                candidate_paths=absolute_candidate_paths,
+                manifest=manifest,
+            )
+
     def clear_sources(self) -> int:
         videos_root = self._validated_videos_root()
         if not videos_root.exists():
@@ -759,6 +865,34 @@ class VideoStore:
             raise self._invalid_store_path(transcripts_root, "outside_video_root")
         return resolved
 
+    def _validated_analysis_dir(
+        self,
+        video: VideoEntry,
+        analysis_id: str,
+        *,
+        create: bool = False,
+    ) -> Path:
+        analyses_root = video.root / "analyses"
+        if analyses_root.is_symlink():
+            raise self._invalid_store_path(analyses_root, "symlink")
+        if analyses_root.exists() and not analyses_root.is_dir():
+            raise self._invalid_store_path(analyses_root, "not_directory")
+        if create:
+            analyses_root.mkdir(exist_ok=True)
+        if not analyses_root.exists():
+            return analyses_root / analysis_id
+        resolved_root = analyses_root.resolve()
+        if video.root not in resolved_root.parents:
+            raise self._invalid_store_path(analyses_root, "outside_video_root")
+        analysis_dir = resolved_root / analysis_id
+        if analysis_dir.is_symlink():
+            raise self._invalid_store_path(analysis_dir, "symlink")
+        if analysis_dir.exists() and not analysis_dir.is_dir():
+            raise self._invalid_store_path(analysis_dir, "not_directory")
+        if create:
+            analysis_dir.mkdir(exist_ok=True)
+        return analysis_dir.resolve()
+
     @staticmethod
     def _transcript_manifest_matches_spec(
         manifest: TranscriptManifest,
@@ -821,6 +955,12 @@ class VideoStore:
         if re.fullmatch(r"[0-9A-Fa-f]{64}", spec_or_cache_key) is None:
             raise ValueError("transcript cache key must be a SHA-256 hex digest")
         return spec_or_cache_key
+
+    @staticmethod
+    def _validate_run_id(value: str) -> str:
+        if re.fullmatch(r"[0-9]{8}-[0-9]{6}-[A-Za-z0-9_-]{6}", value) is None:
+            raise ValueError("run ID must be timestamp plus six path-safe characters")
+        return value
 
     def _managed_source_staging(
         self,

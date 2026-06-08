@@ -9,11 +9,17 @@ import pytest
 
 from insightcast.core.exceptions import InsightCastError
 from insightcast.domain.enums import ErrorCode
-from insightcast.domain.models import Transcript, TranscriptSegment
+from insightcast.domain.models import Candidate, Transcript, TranscriptSegment
 from insightcast.infrastructure.transcription.base import TranscriptionSpec
 from insightcast.infrastructure.ytdlp_client import YouTubeMetadata
 from insightcast.storage.file_job_writer import FileJobWriter
-from insightcast.storage.manifests import ManifestState, TranscriptManifest, VideoManifest
+from insightcast.storage.manifests import (
+    AnalysisManifest,
+    AnalysisState,
+    ManifestState,
+    TranscriptManifest,
+    VideoManifest,
+)
 from insightcast.storage.video_store import VideoStore
 
 VIDEO_ID = "abc123DEF_-"
@@ -99,6 +105,17 @@ def transcription_spec(**updates: object) -> TranscriptionSpec:
     }
     values.update(updates)
     return TranscriptionSpec(**values)
+
+
+def candidate(candidate_id: str = "A") -> Candidate:
+    return Candidate(
+        candidate_id=candidate_id,
+        start_seconds=0,
+        end_seconds=60,
+        suggested_title=f"Candidate {candidate_id}",
+        selection_reason="Strong standalone arc.",
+        summary=f"Summary {candidate_id}",
+    )
 
 
 def test_video_store_resolves_output_and_videos_roots(tmp_path: Path) -> None:
@@ -227,6 +244,53 @@ def test_video_store_writes_and_finds_ready_transcript_by_cache_key(
     assert found.transcript.segments[0].text == "Cached"
     assert entry.transcript_path == entry.directory / "transcript.json"
     assert entry.manifest_path == entry.directory / "manifest.json"
+
+
+def test_video_store_writes_analysis_manifest_and_candidate_directories(
+    tmp_path: Path,
+) -> None:
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    store.ensure_video(metadata(), ORIGINAL_URL)
+    transcript_entry = store.write_transcript(
+        VIDEO_ID,
+        transcription_spec(),
+        transcript("Cached"),
+    )
+
+    analysis = store.write_analysis(
+        video_id=VIDEO_ID,
+        analysis_id="20260607-120000-abcdef",
+        operation_id="operation-1",
+        created_at=transcript_entry.manifest.created_at,
+        completed_at=transcript_entry.manifest.created_at,
+        normalized_source_url=f"https://www.youtube.com/watch?v={VIDEO_ID}",
+        transcript_id=transcript_entry.manifest.transcript_id,
+        curator_model="gpt-curator",
+        prompt_version="curator-v1",
+        candidate_count=2,
+        min_duration_seconds=480,
+        max_duration_seconds=720,
+        candidates=[candidate("A"), candidate("B")],
+        state=AnalysisState.WAITING_SELECTION,
+        log_path=Path("logs/operation-1.log"),
+    )
+
+    assert analysis.directory == store.analysis_dir(
+        VIDEO_ID,
+        "20260607-120000-abcdef",
+    )
+    assert analysis.manifest_path == analysis.directory / "manifest.json"
+    assert analysis.candidates_path == analysis.directory / "candidates.json"
+    assert analysis.candidate_paths == {
+        "A": analysis.directory / "candidates" / "A" / "candidate.json",
+        "B": analysis.directory / "candidates" / "B" / "candidate.json",
+    }
+    assert AnalysisManifest.model_validate_json(
+        analysis.manifest_path.read_text(encoding="utf-8")
+    ) == analysis.manifest
+    assert Candidate.model_validate_json(
+        analysis.candidate_paths["A"].read_text(encoding="utf-8")
+    ).candidate_id == "A"
 
 
 def test_video_store_write_transcript_returns_existing_ready_without_replacing(

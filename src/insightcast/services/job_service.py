@@ -9,7 +9,7 @@ from typing import Any, TypeVar
 from uuid import uuid4
 
 from insightcast.core.exceptions import InsightCastError
-from insightcast.core.logging import get_job_logger
+from insightcast.core.logging import get_job_log_path, get_job_logger
 from insightcast.domain.enums import ErrorCode, JobStatus, JobType
 from insightcast.domain.models import (
     AnalysisJob,
@@ -27,9 +27,10 @@ from insightcast.infrastructure.transcription.base import (
     build_transcript_cache_key,
 )
 from insightcast.storage.file_job_writer import FileJobWriter
+from insightcast.storage.manifests import AnalysisState
 from insightcast.storage.video_store import VideoStore
-from insightcast.utils.files import build_render_dir_name, sanitize_filename
-from insightcast.utils.youtube import normalize_youtube_url
+from insightcast.utils.files import build_render_dir_name, build_run_id, sanitize_filename
+from insightcast.utils.youtube import extract_youtube_video_id, normalize_youtube_url
 
 StageResult = TypeVar("StageResult")
 
@@ -91,6 +92,7 @@ class JobService:
         self._transcript_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._source_metadata: dict[str, Any] = {}
         self.processed_work: list[WorkItem] = []
+        self.video_store = VideoStore(self.output_root, FileJobWriter())
 
     async def create_analysis_job(
         self,
@@ -106,6 +108,7 @@ class JobService:
             return self.analysis_jobs[self.latest_analysis_by_url[normalized_url]]
         job_id = self.id_factory()
         created_at = self.clock()
+        analysis_id = build_run_id(created_at, job_id)
         output_dir = self.output_root / "jobs" / (
             f"{created_at:%Y%m%d-%H%M%S}_pending_{job_id[:6]}"
         )
@@ -117,6 +120,8 @@ class JobService:
             status=JobStatus.QUEUED,
             message="Analysis job is queued.",
             output_dir=output_dir,
+            video_id=extract_youtube_video_id(normalized_url),
+            analysis_id=analysis_id,
             candidate_count=candidate_count,
             min_duration_minutes=min_duration_minutes,
             max_duration_minutes=max_duration_minutes,
@@ -291,21 +296,47 @@ class JobService:
                 ),
             )
             provisional_output_dir = job.output_dir
-            job.output_dir = source.output_dir
-            self._finalize_provisional_output(provisional_output_dir, job.output_dir)
+            job.video_id = source.metadata.video_id
+            job.output_dir = self.video_store.analysis_dir(
+                source.metadata.video_id,
+                job.analysis_id,
+            )
+            job.manifest_path = job.output_dir / "manifest.json"
+            self._finalize_provisional_output(
+                job.job_id,
+                provisional_output_dir,
+                job.output_dir,
+            )
             job.source_artifacts = source.source_artifacts
             self._log_source_cache(job, source)
             self._source_metadata[job_id] = source.metadata
+            candidate_count, minimum, maximum = self._analysis_options[job_id]
             self._set_status(job, JobStatus.TRANSCRIBING, "Transcribing English audio.")
             transcript = await self._load_or_create_transcript(
                 job,
                 source,
             )
             self._transcripts[job_id] = transcript
-            analysis_dir = job.output_dir / "analysis"
+            assert job.transcript_id is not None
+            self.video_store.write_analysis(
+                video_id=source.metadata.video_id,
+                analysis_id=job.analysis_id,
+                operation_id=job.job_id,
+                created_at=job.created_at,
+                completed_at=None,
+                normalized_source_url=job.normalized_youtube_url,
+                transcript_id=job.transcript_id,
+                curator_model="",
+                prompt_version="",
+                candidate_count=candidate_count,
+                min_duration_seconds=minimum * 60,
+                max_duration_seconds=maximum * 60,
+                candidates=[],
+                state=AnalysisState.RUNNING,
+                log_path=Path("logs") / f"{job.job_id}.log",
+            )
 
             self._set_status(job, JobStatus.CURATING, "Selecting candidate idea arcs.")
-            candidate_count, minimum, maximum = self._analysis_options[job_id]
             result = await self._run_stage(
                 job,
                 "candidate_curation",
@@ -317,20 +348,43 @@ class JobService:
                 ),
             )
             job.candidates = result.candidates
-            candidates_path = analysis_dir / "candidates.json"
-            self.writer.write_json(candidates_path, result)
-            job.source_artifacts.candidates = candidates_path.resolve()
-            self._set_status(
-                job,
-                JobStatus.WAITING_SELECTION,
-                f"{len(job.candidates)} candidates are ready for selection.",
+            completed_at = self.clock()
+            analysis = self.video_store.write_analysis(
+                video_id=source.metadata.video_id,
+                analysis_id=job.analysis_id,
+                operation_id=job.job_id,
+                created_at=job.created_at,
+                completed_at=completed_at,
+                normalized_source_url=job.normalized_youtube_url,
+                transcript_id=job.transcript_id,
+                curator_model=result.model,
+                prompt_version=result.prompt_version,
+                candidate_count=candidate_count,
+                min_duration_seconds=minimum * 60,
+                max_duration_seconds=maximum * 60,
+                candidates=result.candidates,
+                state=AnalysisState.WAITING_SELECTION,
+                log_path=Path("logs") / f"{job.job_id}.log",
             )
+            self.writer.write_json(analysis.candidates_path, result)
+            job.source_artifacts.candidates = analysis.candidates_path
+            job.manifest_path = analysis.manifest_path
+            job.status = JobStatus.WAITING_SELECTION
+            job.message = f"{len(job.candidates)} candidates are ready for selection."
+            job.updated_at = completed_at
+            get_job_logger(job.job_id, job.output_dir).info(
+                "%s: %s",
+                job.status,
+                job.message,
+            )
+            self.writer.write_job(job)
         except InsightCastError as exc:
             get_job_logger(job.job_id, job.output_dir).exception(
                 "Analysis pipeline failed with %s",
                 exc.error_code,
             )
             self._fail_job(job, exc)
+            self._write_failed_analysis_manifest(job)
         except Exception as exc:
             get_job_logger(job.job_id, job.output_dir).exception(
                 "Unexpected analysis pipeline failure"
@@ -344,6 +398,7 @@ class JobService:
                     stage="analysis",
                 ),
             )
+            self._write_failed_analysis_manifest(job)
 
     async def _process_analysis_render(self, job_id: str, render_id: str) -> None:
         job = self.get_analysis_job(job_id)
@@ -456,7 +511,11 @@ class JobService:
             )
             provisional_output_dir = job.output_dir
             job.output_dir = source.output_dir
-            self._finalize_provisional_output(provisional_output_dir, job.output_dir)
+            self._finalize_provisional_output(
+                job.job_id,
+                provisional_output_dir,
+                job.output_dir,
+            )
             job.source_artifacts = source.source_artifacts
             self._log_source_cache(job, source)
             self._set_status(job, JobStatus.TRANSCRIBING, "Transcribing English audio.")
@@ -619,6 +678,7 @@ class JobService:
             )
         assert job.source_artifacts is not None
         job.source_artifacts.transcript = entry.transcript_path
+        job.transcript_id = entry.manifest.transcript_id
         get_job_logger(job.job_id, job.output_dir).info(
             "transcript_cache_miss video_id=%s transcript_id=%s cache_key=%s",
             source.metadata.video_id,
@@ -635,6 +695,7 @@ class JobService:
     ) -> Transcript:
         assert job.source_artifacts is not None
         job.source_artifacts.transcript = cached.transcript_path
+        job.transcript_id = cached.manifest.transcript_id
         get_job_logger(job.job_id, job.output_dir).info(
             "transcript_cache_hit video_id=%s transcript_id=%s cache_key=%s",
             source.metadata.video_id,
@@ -670,6 +731,7 @@ class JobService:
 
     def _finalize_provisional_output(
         self,
+        job_id: str,
         provisional_dir: Path,
         final_dir: Path,
     ) -> None:
@@ -680,7 +742,8 @@ class JobService:
         final = final_dir.resolve()
         final.mkdir(parents=True, exist_ok=True)
         provisional_log = resolved / "pipeline.log"
-        final_log = final / "pipeline.log"
+        final_log = get_job_log_path(job_id, final)
+        final_log.parent.mkdir(parents=True, exist_ok=True)
         if provisional_log.exists():
             if final_log.exists():
                 with final_log.open("a", encoding="utf-8") as destination:
@@ -703,6 +766,29 @@ class JobService:
         job.message = error.message
         job.error = self._as_job_error(error, error.stage)
         self._touch(job)
+
+    def _write_failed_analysis_manifest(self, job: AnalysisJob) -> None:
+        if job.video_id is None or job.transcript_id is None or job.error is None:
+            return
+        candidate_count, minimum, maximum = self._analysis_options[job.job_id]
+        self.video_store.write_analysis(
+            video_id=job.video_id,
+            analysis_id=job.analysis_id,
+            operation_id=job.job_id,
+            created_at=job.created_at,
+            completed_at=job.updated_at,
+            normalized_source_url=job.normalized_youtube_url,
+            transcript_id=job.transcript_id,
+            curator_model="",
+            prompt_version="",
+            candidate_count=candidate_count,
+            min_duration_seconds=minimum * 60,
+            max_duration_seconds=maximum * 60,
+            candidates=job.candidates,
+            state=AnalysisState.FAILED,
+            log_path=Path("logs") / f"{job.job_id}.log",
+            error=job.error,
+        )
 
     @staticmethod
     def _as_job_error(exc: Exception, stage: str | None) -> JobError:

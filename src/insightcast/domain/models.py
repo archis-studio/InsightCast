@@ -108,6 +108,10 @@ class BaseJob(DomainModel):
 
 
 class AnalysisJob(BaseJob):
+    video_id: str | None = None
+    analysis_id: str
+    transcript_id: str | None = None
+    manifest_path: Path | None = None
     candidate_count: int = Field(default=2, ge=1, le=26)
     min_duration_minutes: float = Field(default=8, gt=0)
     max_duration_minutes: float = Field(default=12, gt=0)

@@ -21,6 +21,8 @@ def make_job(tmp_path: Path) -> AnalysisJob:
         status=JobStatus.QUEUED,
         message="Queued.",
         output_dir=(tmp_path / "nested" / "job").resolve(),
+        video_id="abc123DEF_-",
+        analysis_id="20260606-143000-job-1a",
     )
 
 

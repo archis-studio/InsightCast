@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from insightcast.core.exceptions import InsightCastError
+from insightcast.core.logging import get_job_log_path
 from insightcast.domain.enums import ErrorCode, JobStatus
 from insightcast.domain.models import (
     Candidate,
@@ -21,6 +22,7 @@ from insightcast.engines.source_engine import SourceResult
 from insightcast.infrastructure.ytdlp_client import YouTubeMetadata
 from insightcast.services.job_service import JobService, WorkKind
 from insightcast.storage.file_job_writer import FileJobWriter
+from insightcast.storage.manifests import AnalysisManifest, AnalysisState
 from insightcast.storage.video_store import VideoStore
 
 
@@ -153,6 +155,15 @@ class FakeCurator:
         )
 
 
+class FailingCurator:
+    async def curate(self, **_kwargs: object) -> CurationResult:
+        raise InsightCastError(
+            ErrorCode.INSUFFICIENT_CANDIDATES,
+            "Not enough candidates.",
+            stage="curating",
+        )
+
+
 class FakeClip:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -197,6 +208,84 @@ def make_service(tmp_path: Path) -> tuple[JobService, FakeCurator, FakeClip]:
         id_factory=IdFactory(),
     )
     return service, curator, clip
+
+
+@pytest.mark.asyncio
+async def test_forced_analyses_are_immutable_and_write_candidate_directories(
+    tmp_path: Path,
+) -> None:
+    service, _curator, _clip = make_service(tmp_path)
+
+    first = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+    await service.process(await service.queue.get())
+    second = await service.create_analysis_job(
+        "https://youtu.be/abc123DEF_-",
+        force_reanalyze=True,
+    )
+    await service.process(await service.queue.get())
+
+    assert first.analysis_id != second.analysis_id
+    for job in (first, second):
+        assert job.video_id == "abc123DEF_-"
+        assert job.transcript_id is not None
+        assert job.manifest_path == job.output_dir / "manifest.json"
+        assert job.output_dir == service.video_store.analysis_dir(
+            "abc123DEF_-",
+            job.analysis_id,
+        )
+        assert (job.output_dir / "candidates.json").is_file()
+        assert (job.output_dir / "candidates" / "A" / "candidate.json").is_file()
+        assert (job.output_dir / "candidates" / "B" / "candidate.json").is_file()
+
+        manifest = AnalysisManifest.model_validate_json(
+            (job.output_dir / "manifest.json").read_text(encoding="utf-8")
+        )
+        assert manifest.state is AnalysisState.WAITING_SELECTION
+        assert manifest.video_id == "abc123DEF_-"
+        assert manifest.analysis_id == job.analysis_id
+        assert manifest.transcript_id == job.transcript_id
+        assert manifest.candidates_path == Path(
+            f"analyses/{job.analysis_id}/candidates.json"
+        )
+        assert manifest.candidate_paths == {
+            "A": Path(f"analyses/{job.analysis_id}/candidates/A"),
+            "B": Path(f"analyses/{job.analysis_id}/candidates/B"),
+        }
+        assert manifest.log_path == Path(f"logs/{job.job_id}.log")
+        log_path = job.output_dir.parent.parent / manifest.log_path
+        assert log_path.is_file()
+        assert "WAITING_SELECTION" in log_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_failed_analysis_after_transcript_retains_failed_manifest(
+    tmp_path: Path,
+) -> None:
+    service = JobService(
+        output_root=tmp_path / "outputs",
+        work_root=tmp_path / ".work",
+        source_engine=FakeSource(),
+        transcription_client=FakeTranscriber(),
+        curator_engine=FailingCurator(),
+        clip_engine=FakeClip(),
+        publish_engine=FakePublish(),
+        writer=FileJobWriter(),
+        clock=Clock(),
+        id_factory=IdFactory(),
+    )
+    job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+
+    await service.process(await service.queue.get())
+
+    assert job.status is JobStatus.FAILED
+    assert job.manifest_path is not None
+    manifest = AnalysisManifest.model_validate_json(
+        job.manifest_path.read_text(encoding="utf-8")
+    )
+    assert manifest.state is AnalysisState.FAILED
+    assert manifest.error is not None
+    assert manifest.error.error_code is ErrorCode.INSUFFICIENT_CANDIDATES
+    assert manifest.log_path == Path(f"logs/{job.job_id}.log")
 
 
 @pytest.mark.asyncio
@@ -580,7 +669,7 @@ async def test_analysis_failure_writes_traceback_to_pipeline_log(tmp_path: Path)
 
     await service.process(await service.queue.get())
 
-    log = (job.output_dir / "pipeline.log").read_text(encoding="utf-8")
+    log = get_job_log_path(job.job_id, job.output_dir).read_text(encoding="utf-8")
     assert "unexpected source failure" in log
     assert "Traceback" in log
 
@@ -608,10 +697,15 @@ async def test_analysis_removes_provisional_output_after_final_directory_is_know
 
     assert job.output_dir != provisional_dir
     assert job.output_dir == (
-        tmp_path / "outputs" / "videos" / "abc123DEF_-_source"
+        tmp_path
+        / "outputs"
+        / "videos"
+        / "abc123DEF_-_source"
+        / "analyses"
+        / "20260606-143000-id0001"
     ).resolve()
     assert not provisional_dir.exists()
-    log = (job.output_dir / "pipeline.log").read_text(encoding="utf-8")
+    log = get_job_log_path(job.job_id, job.output_dir).read_text(encoding="utf-8")
     assert "WAITING_SELECTION" in log
 
 
@@ -639,7 +733,7 @@ async def test_pipeline_log_records_analysis_and_render_stage_timings(
     )
     await service.process(await service.queue.get())
 
-    log = (job.output_dir / "pipeline.log").read_text(encoding="utf-8")
+    log = get_job_log_path(job.job_id, job.output_dir).read_text(encoding="utf-8")
     assert "source_cache_miss" in log
     for stage in (
         "source_ingestion",
