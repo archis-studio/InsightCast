@@ -22,7 +22,12 @@ from insightcast.engines.source_engine import SourceResult
 from insightcast.infrastructure.ytdlp_client import YouTubeMetadata
 from insightcast.services.job_service import JobService, WorkKind
 from insightcast.storage.file_job_writer import FileJobWriter
-from insightcast.storage.manifests import AnalysisManifest, AnalysisState
+from insightcast.storage.manifests import (
+    AnalysisManifest,
+    AnalysisState,
+    RenderManifest,
+    RenderState,
+)
 from insightcast.storage.video_store import VideoStore
 
 
@@ -175,16 +180,23 @@ class FakeClip:
         if selection.candidate_id in self.fail_candidates:
             raise InsightCastError(ErrorCode.VIDEO_RENDER_FAILED, "render failed")
         output_dir = Path(kwargs["output_dir"])
-        base_name = str(kwargs["base_name"])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        traditional_chinese_srt = output_dir / "subtitles.zh-TW.srt"
+        bilingual_ass = output_dir / "subtitles.bilingual.ass"
+        burned_video = output_dir / "video.mp4"
+        traditional_chinese_srt.write_text("srt", encoding="utf-8")
+        bilingual_ass.write_text("ass", encoding="utf-8")
+        burned_video.write_bytes(b"video")
         return ClipArtifacts(
-            traditional_chinese_srt=output_dir / f"{base_name}.zh-TW.srt",
-            bilingual_ass=output_dir / f"{base_name}.bilingual.ass",
-            burned_video=output_dir / f"{base_name}.bilingual.burned.mp4",
+            traditional_chinese_srt=traditional_chinese_srt,
+            bilingual_ass=bilingual_ass,
+            burned_video=burned_video,
         )
 
 
 class FakePublish:
-    async def generate(self, **_kwargs: object) -> GeneratedYouTubeMetadata:
+    async def generate(self, **kwargs: object) -> GeneratedYouTubeMetadata:
+        Path(kwargs["destination"]).write_text("{}", encoding="utf-8")
         return GeneratedYouTubeMetadata(
             title="Title",
             description="Description",
@@ -538,6 +550,36 @@ async def test_render_skips_completed_candidate_and_force_creates_new_batch(
 
 
 @pytest.mark.asyncio
+async def test_candidate_render_is_nested_under_original_candidate_letter(
+    tmp_path: Path,
+) -> None:
+    service, _, _ = make_service(tmp_path)
+    job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+    await service.process(await service.queue.get())
+
+    first = await service.create_render(
+        job.job_id,
+        CandidateSelectionRequest(candidate_ids="A", force_render=True),
+    )
+    await service.process(await service.queue.get())
+    second = await service.create_render(
+        job.job_id,
+        CandidateSelectionRequest(candidate_ids="A", force_render=True),
+    )
+    await service.process(await service.queue.get())
+
+    assert first.output_dir.parent.parent.name == "A"
+    assert first.output_dir != second.output_dir
+    assert {path.name for path in first.output_dir.iterdir()} == {
+        "manifest.json",
+        "video.mp4",
+        "subtitles.zh-TW.srt",
+        "subtitles.bilingual.ass",
+        "youtube-metadata.json",
+    }
+
+
+@pytest.mark.asyncio
 async def test_partial_render_failure_keeps_success_and_can_retry_failed_candidate(
     tmp_path: Path,
 ) -> None:
@@ -645,6 +687,48 @@ async def test_direct_render_is_unique_and_does_not_call_curator(tmp_path: Path)
     assert curator.calls == 0
     assert isinstance(first.artifacts, RenderArtifacts)
     assert all(item.kind == WorkKind.DIRECT_RENDER for item in service.processed_work[-2:])
+
+
+@pytest.mark.asyncio
+async def test_direct_render_uses_video_level_custom_directory(tmp_path: Path) -> None:
+    service, _, _ = make_service(tmp_path)
+    job = await service.create_direct_render_job(
+        "https://youtu.be/abc123DEF_-",
+        start_seconds=10,
+        end_seconds=20,
+    )
+
+    await service.process(await service.queue.get())
+
+    assert job.output_dir.parent.name == "custom"
+    assert {path.name for path in job.output_dir.iterdir()} == {
+        "manifest.json",
+        "video.mp4",
+        "subtitles.zh-TW.srt",
+        "subtitles.bilingual.ass",
+        "youtube-metadata.json",
+    }
+
+
+@pytest.mark.asyncio
+async def test_failed_direct_render_retains_failed_manifest(tmp_path: Path) -> None:
+    service, _, clip = make_service(tmp_path)
+    clip.fail_candidates = {"custom"}
+    job = await service.create_direct_render_job(
+        "https://youtu.be/abc123DEF_-",
+        start_seconds=10,
+        end_seconds=20,
+    )
+
+    await service.process(await service.queue.get())
+
+    manifest = RenderManifest.model_validate_json(
+        (job.output_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert job.status == JobStatus.FAILED
+    assert manifest.render_state is RenderState.FAILED
+    assert manifest.render_error is not None
+    assert job.output_dir.is_dir()
 
 
 @pytest.mark.asyncio

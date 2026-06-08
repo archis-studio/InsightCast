@@ -18,7 +18,12 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from insightcast.core.exceptions import InsightCastError
 from insightcast.domain.enums import ErrorCode
-from insightcast.domain.models import Candidate, JobError, Transcript
+from insightcast.domain.models import (
+    Candidate,
+    JobError,
+    RenderArtifacts,
+    Transcript,
+)
 from insightcast.infrastructure.transcription.base import (
     TranscriptionSpec,
     build_transcript_cache_key,
@@ -31,6 +36,10 @@ from insightcast.storage.manifests import (
     AnalysisState,
     ManifestModel,
     ManifestState,
+    PublishState,
+    RenderKind,
+    RenderManifest,
+    RenderState,
     SourceManifest,
     TranscriptManifest,
     VideoManifest,
@@ -98,6 +107,16 @@ class AnalysisEntry(BaseModel):
     candidates_path: Path
     candidate_paths: dict[str, Path]
     manifest: AnalysisManifest
+
+
+class RenderEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    root: Path
+    directory: Path
+    manifest_path: Path
+    manifest: RenderManifest
+    artifacts: RenderArtifacts | None = None
 
 
 class SourceTransaction:
@@ -638,6 +657,230 @@ class VideoStore:
                 candidate_paths=absolute_candidate_paths,
                 manifest=manifest,
             )
+
+    def render_dir(
+        self,
+        video_id: str,
+        render_id: str,
+        *,
+        analysis_id: str | None = None,
+        candidate_id: str | None = None,
+    ) -> Path:
+        validated_video_id = validate_youtube_video_id(video_id)
+        validated_render_id = self._validate_run_id(render_id)
+        video = self.find_video(validated_video_id)
+        if video is None:
+            raise self._invalid_source(validated_video_id, "video_missing")
+        if analysis_id is None and candidate_id is None:
+            path = (
+                video.root / "renders" / "custom" / validated_render_id
+            )
+        else:
+            if analysis_id is None or candidate_id is None:
+                raise ValueError("candidate renders require analysis_id and candidate_id")
+            validated_analysis_id = self._validate_run_id(analysis_id)
+            validated_candidate_id = candidate_id.upper()
+            if (
+                len(validated_candidate_id) != 1
+                or not "A" <= validated_candidate_id <= "Z"
+            ):
+                raise ValueError("candidate ID must be a single uppercase letter")
+            path = (
+                video.root
+                / "analyses"
+                / validated_analysis_id
+                / "candidates"
+                / validated_candidate_id
+                / "renders"
+                / validated_render_id
+            )
+        resolved = path.resolve()
+        if video.root not in resolved.parents:
+            raise self._invalid_store_path(path, "render_outside_video")
+        return resolved
+
+    def write_render(
+        self,
+        *,
+        video_id: str,
+        render_id: str,
+        operation_id: str,
+        kind: RenderKind,
+        analysis_id: str | None,
+        candidate_id: str | None,
+        start_seconds: float,
+        end_seconds: float,
+        source_fingerprint: str,
+        transcript_id: str,
+        render_config: dict[str, object],
+        created_at: datetime,
+        completed_at: datetime | None,
+        render_state: RenderState,
+        publish_state: PublishState,
+        log_path: Path,
+        render_error: JobError | None = None,
+    ) -> RenderEntry:
+        render_dir = self.render_dir(
+            video_id,
+            render_id,
+            analysis_id=analysis_id,
+            candidate_id=candidate_id,
+        )
+        render_dir.mkdir(parents=True, exist_ok=True)
+        artifacts: dict[str, Path] = {}
+        artifact_sizes: dict[str, int] = {}
+        resolved_artifacts: RenderArtifacts | None = None
+        if render_state is RenderState.READY:
+            artifact_names = {
+                "video": "video.mp4",
+                "traditional_chinese_srt": "subtitles.zh-TW.srt",
+                "bilingual_ass": "subtitles.bilingual.ass",
+                "youtube_metadata": "youtube-metadata.json",
+            }
+            for key, name in artifact_names.items():
+                path = render_dir / name
+                if (
+                    path.is_symlink()
+                    or not path.is_file()
+                    or path.stat().st_size <= 0
+                ):
+                    raise self._invalid_artifact(path)
+                artifacts[key] = Path(name)
+                artifact_sizes[key] = path.stat().st_size
+            resolved_artifacts = RenderArtifacts(
+                traditional_chinese_srt=render_dir / "subtitles.zh-TW.srt",
+                bilingual_ass=render_dir / "subtitles.bilingual.ass",
+                burned_video=render_dir / "video.mp4",
+                youtube_metadata=render_dir / "youtube-metadata.json",
+            )
+        manifest = RenderManifest(
+            render_id=render_id,
+            operation_id=operation_id,
+            kind=kind,
+            analysis_id=analysis_id,
+            candidate_id=candidate_id,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+            source_fingerprint=source_fingerprint,
+            transcript_id=transcript_id,
+            render_config=render_config,
+            artifacts=artifacts,
+            artifact_sizes=artifact_sizes,
+            created_at=created_at,
+            completed_at=completed_at,
+            render_state=render_state,
+            publish_state=publish_state,
+            youtube_video_id=None,
+            youtube_url=None,
+            upload_started_at=None,
+            uploaded_at=None,
+            log_path=log_path,
+            render_error=render_error,
+        )
+        manifest_path = render_dir / "manifest.json"
+        self.writer.write_json(manifest_path, manifest)
+        video = self.find_video(video_id)
+        assert video is not None
+        return RenderEntry(
+            root=video.root,
+            directory=render_dir,
+            manifest_path=manifest_path.resolve(),
+            manifest=manifest,
+            artifacts=resolved_artifacts,
+        )
+
+    def find_ready_candidate_render(
+        self,
+        video_id: str,
+        analysis_id: str,
+        candidate_id: str,
+    ) -> RenderEntry | None:
+        validated_candidate_id = candidate_id.upper()
+        if len(validated_candidate_id) != 1 or not "A" <= validated_candidate_id <= "Z":
+            raise ValueError("candidate ID must be a single uppercase letter")
+        video = self.find_video(video_id)
+        if video is None:
+            return None
+        candidate_root = (
+            video.root
+            / "analyses"
+            / self._validate_run_id(analysis_id)
+            / "candidates"
+            / validated_candidate_id
+            / "renders"
+        )
+        resolved_candidate_root = candidate_root.resolve()
+        if (
+            video.root not in resolved_candidate_root.parents
+            or not resolved_candidate_root.is_dir()
+        ):
+            return None
+        entries: list[RenderEntry] = []
+        for directory in resolved_candidate_root.iterdir():
+            if directory.is_symlink() or not directory.is_dir():
+                continue
+            try:
+                validated_render_id = self._validate_run_id(directory.name)
+                manifest = self.read_manifest(
+                    directory / "manifest.json",
+                    RenderManifest,
+                )
+                if (
+                    manifest.render_id != validated_render_id
+                    or manifest.kind is not RenderKind.CANDIDATE
+                    or manifest.analysis_id != analysis_id
+                    or manifest.candidate_id != validated_candidate_id
+                    or manifest.render_state is not RenderState.READY
+                ):
+                    continue
+                artifacts = self._render_artifacts(directory, manifest)
+            except (InsightCastError, OSError, ValueError):
+                continue
+            video = self.find_video(video_id)
+            assert video is not None
+            entries.append(
+                RenderEntry(
+                    root=video.root,
+                    directory=directory.resolve(),
+                    manifest_path=(directory / "manifest.json").resolve(),
+                    manifest=manifest,
+                    artifacts=artifacts,
+                )
+            )
+        if not entries:
+            return None
+        return max(entries, key=lambda entry: (entry.manifest.created_at, entry.manifest.render_id))
+
+    def _render_artifacts(
+        self,
+        directory: Path,
+        manifest: RenderManifest,
+    ) -> RenderArtifacts:
+        expected = {
+            "video": Path("video.mp4"),
+            "traditional_chinese_srt": Path("subtitles.zh-TW.srt"),
+            "bilingual_ass": Path("subtitles.bilingual.ass"),
+            "youtube_metadata": Path("youtube-metadata.json"),
+        }
+        if manifest.artifacts != expected:
+            raise self._invalid_artifact(directory)
+        resolved = {
+            key: self.resolve_relative(directory, relative)
+            for key, relative in expected.items()
+        }
+        if any(
+            path.is_symlink()
+            or not path.is_file()
+            or path.stat().st_size != manifest.artifact_sizes[key]
+            for key, path in resolved.items()
+        ):
+            raise self._invalid_artifact(directory)
+        return RenderArtifacts(
+            traditional_chinese_srt=resolved["traditional_chinese_srt"],
+            bilingual_ass=resolved["bilingual_ass"],
+            burned_video=resolved["video"],
+            youtube_metadata=resolved["youtube_metadata"],
+        )
 
     def clear_sources(self) -> int:
         videos_root = self._validated_videos_root()

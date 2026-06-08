@@ -1,5 +1,6 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from multiprocessing import Event, Queue, get_context
 from pathlib import Path
 from threading import Barrier
@@ -17,6 +18,10 @@ from insightcast.storage.manifests import (
     AnalysisManifest,
     AnalysisState,
     ManifestState,
+    PublishState,
+    RenderKind,
+    RenderManifest,
+    RenderState,
     TranscriptManifest,
     VideoManifest,
 )
@@ -291,6 +296,88 @@ def test_video_store_writes_analysis_manifest_and_candidate_directories(
     assert Candidate.model_validate_json(
         analysis.candidate_paths["A"].read_text(encoding="utf-8")
     ).candidate_id == "A"
+
+
+def test_video_store_writes_ready_candidate_render_with_stable_artifacts(
+    tmp_path: Path,
+) -> None:
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    store.ensure_video(metadata(), ORIGINAL_URL)
+    source_fingerprint = "a" * 64
+    render_dir = store.render_dir(
+        VIDEO_ID,
+        "20260607-130000-abcdef",
+        analysis_id="20260607-120000-abcdef",
+        candidate_id="A",
+    )
+    render_dir.mkdir(parents=True)
+    for name in (
+        "video.mp4",
+        "subtitles.zh-TW.srt",
+        "subtitles.bilingual.ass",
+        "youtube-metadata.json",
+    ):
+        (render_dir / name).write_bytes(name.encode())
+
+    entry = store.write_render(
+        video_id=VIDEO_ID,
+        render_id="20260607-130000-abcdef",
+        operation_id="operation-2",
+        kind=RenderKind.CANDIDATE,
+        analysis_id="20260607-120000-abcdef",
+        candidate_id="A",
+        start_seconds=0,
+        end_seconds=60,
+        source_fingerprint=source_fingerprint,
+        transcript_id="tx-123",
+        render_config={"subtitle_style": "bilingual"},
+        created_at=datetime(2026, 6, 7, 13, 0, tzinfo=UTC),
+        completed_at=datetime(2026, 6, 7, 13, 1, tzinfo=UTC),
+        render_state=RenderState.READY,
+        publish_state=PublishState.NOT_UPLOADED,
+        log_path=Path("logs/operation-2.log"),
+    )
+
+    assert entry.directory == render_dir
+    assert entry.artifacts.burned_video == render_dir / "video.mp4"
+    assert entry.manifest.artifacts == {
+        "video": Path("video.mp4"),
+        "traditional_chinese_srt": Path("subtitles.zh-TW.srt"),
+        "bilingual_ass": Path("subtitles.bilingual.ass"),
+        "youtube_metadata": Path("youtube-metadata.json"),
+    }
+    assert RenderManifest.model_validate_json(
+        entry.manifest_path.read_text(encoding="utf-8")
+    ) == entry.manifest
+
+
+def test_video_store_rejects_external_candidate_render_symlink(
+    tmp_path: Path,
+) -> None:
+    store = VideoStore(tmp_path / "outputs", FileJobWriter())
+    video = store.ensure_video(metadata(), ORIGINAL_URL)
+    external = tmp_path / "external"
+    external.mkdir()
+    candidate_dir = (
+        video.root
+        / "analyses"
+        / "20260607-120000-abcdef"
+        / "candidates"
+        / "A"
+    )
+    candidate_dir.mkdir(parents=True)
+    (candidate_dir / "renders").symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(InsightCastError) as error:
+        store.render_dir(
+            VIDEO_ID,
+            "20260607-130000-abcdef",
+            analysis_id="20260607-120000-abcdef",
+            candidate_id="A",
+        )
+
+    assert error.value.error_code == ErrorCode.ARTIFACT_PATH_INVALID
+    assert list(external.iterdir()) == []
 
 
 def test_video_store_write_transcript_returns_existing_ready_without_replacing(

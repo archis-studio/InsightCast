@@ -6,8 +6,9 @@ _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 
 def get_job_log_path(job_id: str, output_dir: Path) -> Path:
     resolved_output_dir = output_dir.expanduser().resolve()
-    if resolved_output_dir.parent.name == "analyses":
-        return resolved_output_dir.parent.parent / "logs" / f"{job_id}.log"
+    for candidate in (resolved_output_dir, *resolved_output_dir.parents):
+        if (candidate / "video.json").is_file():
+            return candidate / "logs" / f"{job_id}.log"
     return resolved_output_dir / "pipeline.log"
 
 

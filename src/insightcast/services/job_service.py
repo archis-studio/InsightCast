@@ -27,9 +27,14 @@ from insightcast.infrastructure.transcription.base import (
     build_transcript_cache_key,
 )
 from insightcast.storage.file_job_writer import FileJobWriter
-from insightcast.storage.manifests import AnalysisState
+from insightcast.storage.manifests import (
+    AnalysisState,
+    PublishState,
+    RenderKind,
+    RenderState,
+)
 from insightcast.storage.video_store import VideoStore
-from insightcast.utils.files import build_render_dir_name, build_run_id, sanitize_filename
+from insightcast.utils.files import build_run_id
 from insightcast.utils.youtube import extract_youtube_video_id, normalize_youtube_url
 
 StageResult = TypeVar("StageResult")
@@ -91,6 +96,7 @@ class JobService:
         self._transcripts: dict[str, Transcript] = {}
         self._transcript_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._source_metadata: dict[str, Any] = {}
+        self._source_fingerprints: dict[str, str] = {}
         self.processed_work: list[WorkItem] = []
         self.video_store = VideoStore(self.output_root, FileJobWriter())
 
@@ -187,11 +193,14 @@ class JobService:
                 stage="rendering",
             )
 
-        render_id = self.id_factory()
         created_at = self.clock()
-        output_dir = job.output_dir / "renders" / build_render_dir_name(
-            created_at,
+        render_id = build_run_id(created_at, self.id_factory())
+        assert job.video_id is not None
+        output_dir = self.video_store.render_dir(
+            job.video_id,
             render_id,
+            analysis_id=job.analysis_id,
+            candidate_id=request.candidate_ids[0],
         )
         batch = RenderBatch(
             render_id=render_id,
@@ -204,12 +213,42 @@ class JobService:
         )
         if not request.force_render:
             for candidate_id in request.candidate_ids:
-                existing = self._completed_artifacts(job, candidate_id)
+                existing = self.video_store.find_ready_candidate_render(
+                    job.video_id,
+                    job.analysis_id,
+                    candidate_id,
+                )
                 if existing is not None:
                     batch.candidate_results[candidate_id] = CandidateRenderResult(
                         candidate_id=candidate_id,
-                        artifacts=existing,
+                        output_dir=existing.directory,
+                        manifest_path=existing.manifest_path,
+                        artifacts=existing.artifacts,
                     )
+        source_fingerprint = self._source_fingerprint_for_job(job)
+        assert job.transcript_id is not None
+        for candidate_id in request.candidate_ids:
+            if candidate_id in batch.candidate_results:
+                continue
+            candidate = candidates[candidate_id]
+            self.video_store.write_render(
+                video_id=job.video_id,
+                render_id=render_id,
+                operation_id=job.job_id,
+                kind=RenderKind.CANDIDATE,
+                analysis_id=job.analysis_id,
+                candidate_id=candidate_id,
+                start_seconds=candidate.start_seconds,
+                end_seconds=candidate.end_seconds,
+                source_fingerprint=source_fingerprint,
+                transcript_id=job.transcript_id,
+                render_config={"subtitle_language": "zh-TW", "bilingual": True},
+                created_at=created_at,
+                completed_at=None,
+                render_state=RenderState.QUEUED,
+                publish_state=PublishState.NOT_UPLOADED,
+                log_path=Path("logs") / f"{job.job_id}.log",
+            )
         job.render_batches.append(batch)
         if len(batch.candidate_results) == len(request.candidate_ids):
             batch.status = JobStatus.COMPLETED
@@ -242,6 +281,7 @@ class JobService:
         normalized_url = normalize_youtube_url(youtube_url)
         job_id = self.id_factory()
         created_at = self.clock()
+        render_id = build_run_id(created_at, job_id)
         output_dir = self.output_root / "jobs" / (
             f"{created_at:%Y%m%d-%H%M%S}_pending_direct_{job_id[:6]}"
         )
@@ -253,6 +293,8 @@ class JobService:
             status=JobStatus.QUEUED,
             message="Direct render job is queued.",
             output_dir=output_dir,
+            video_id=extract_youtube_video_id(normalized_url),
+            render_id=render_id,
             start_seconds=start_seconds,
             end_seconds=end_seconds,
             created_at=created_at,
@@ -310,6 +352,12 @@ class JobService:
             job.source_artifacts = source.source_artifacts
             self._log_source_cache(job, source)
             self._source_metadata[job_id] = source.metadata
+            self._source_fingerprints[job.job_id] = (
+                await asyncio.to_thread(
+                    self._load_source_fingerprint,
+                    source.metadata.video_id,
+                )
+            )
             candidate_count, minimum, maximum = self._analysis_options[job_id]
             self._set_status(job, JobStatus.TRANSCRIBING, "Transcribing English audio.")
             transcript = await self._load_or_create_transcript(
@@ -417,10 +465,33 @@ class JobService:
             if candidate_id in batch.candidate_results:
                 continue
             candidate = candidates[candidate_id]
-            candidate_dir = batch.output_dir / f"candidate-{candidate_id.lower()}"
-            source_base = job.source_artifacts.source_video.stem.removesuffix(".source")
-            base_name = f"{source_base}.{candidate_id.lower()}"
+            assert job.video_id is not None
+            assert job.transcript_id is not None
+            candidate_dir = self.video_store.render_dir(
+                job.video_id,
+                batch.render_id,
+                analysis_id=job.analysis_id,
+                candidate_id=candidate_id,
+            )
             try:
+                self.video_store.write_render(
+                    video_id=job.video_id,
+                    render_id=batch.render_id,
+                    operation_id=job.job_id,
+                    kind=RenderKind.CANDIDATE,
+                    analysis_id=job.analysis_id,
+                    candidate_id=candidate_id,
+                    start_seconds=candidate.start_seconds,
+                    end_seconds=candidate.end_seconds,
+                    source_fingerprint=self._source_fingerprint_for_job(job),
+                    transcript_id=job.transcript_id,
+                    render_config={"subtitle_language": "zh-TW", "bilingual": True},
+                    created_at=batch.created_at,
+                    completed_at=None,
+                    render_state=RenderState.RENDERING,
+                    publish_state=PublishState.NOT_UPLOADED,
+                    log_path=Path("logs") / f"{job.job_id}.log",
+                )
                 if not job.source_artifacts.source_video.is_file():
                     raise InsightCastError(
                         ErrorCode.SOURCE_CACHE_MISSING,
@@ -431,21 +502,19 @@ class JobService:
                         },
                         stage="rendering",
                     )
-                clip = await self._run_stage(
+                await self._run_stage(
                     job,
                     "candidate_clip_render",
                     lambda candidate=candidate,
-                    candidate_dir=candidate_dir,
-                    base_name=base_name: self.clip_engine.render(
+                    candidate_dir=candidate_dir: self.clip_engine.render(
                         source_video=job.source_artifacts.source_video,
                         transcript_segments=transcript.segments,
                         selection=candidate,
                         output_dir=candidate_dir,
                         work_dir=self.work_root / job.job_id / batch.render_id,
-                        base_name=base_name,
                     ),
                 )
-                metadata_path = candidate_dir / f"{base_name}.youtube-metadata.json"
+                metadata_path = candidate_dir / "youtube-metadata.json"
                 excerpt = self._transcript_excerpt(transcript, candidate)
                 await self._run_stage(
                     job,
@@ -459,14 +528,29 @@ class JobService:
                         destination=metadata_path,
                     ),
                 )
+                render = self.video_store.write_render(
+                    video_id=job.video_id,
+                    render_id=batch.render_id,
+                    operation_id=job.job_id,
+                    kind=RenderKind.CANDIDATE,
+                    analysis_id=job.analysis_id,
+                    candidate_id=candidate_id,
+                    start_seconds=candidate.start_seconds,
+                    end_seconds=candidate.end_seconds,
+                    source_fingerprint=self._source_fingerprint_for_job(job),
+                    transcript_id=job.transcript_id,
+                    render_config={"subtitle_language": "zh-TW", "bilingual": True},
+                    created_at=batch.created_at,
+                    completed_at=self.clock(),
+                    render_state=RenderState.READY,
+                    publish_state=PublishState.NOT_UPLOADED,
+                    log_path=Path("logs") / f"{job.job_id}.log",
+                )
                 batch.candidate_results[candidate_id] = CandidateRenderResult(
                     candidate_id=candidate_id,
-                    artifacts=RenderArtifacts(
-                        traditional_chinese_srt=clip.traditional_chinese_srt.resolve(),
-                        bilingual_ass=clip.bilingual_ass.resolve(),
-                        burned_video=clip.burned_video.resolve(),
-                        youtube_metadata=metadata_path.resolve(),
-                    ),
+                    output_dir=render.directory,
+                    manifest_path=render.manifest_path,
+                    artifacts=render.artifacts,
                 )
             except Exception as exc:
                 get_job_logger(job.job_id, job.output_dir).exception(
@@ -474,8 +558,29 @@ class JobService:
                     candidate_id,
                 )
                 error = self._as_job_error(exc, "rendering")
+                self.video_store.write_render(
+                    video_id=job.video_id,
+                    render_id=batch.render_id,
+                    operation_id=job.job_id,
+                    kind=RenderKind.CANDIDATE,
+                    analysis_id=job.analysis_id,
+                    candidate_id=candidate_id,
+                    start_seconds=candidate.start_seconds,
+                    end_seconds=candidate.end_seconds,
+                    source_fingerprint=self._source_fingerprint_for_job(job),
+                    transcript_id=job.transcript_id,
+                    render_config={"subtitle_language": "zh-TW", "bilingual": True},
+                    created_at=batch.created_at,
+                    completed_at=self.clock(),
+                    render_state=RenderState.FAILED,
+                    publish_state=PublishState.NOT_UPLOADED,
+                    log_path=Path("logs") / f"{job.job_id}.log",
+                    render_error=error,
+                )
                 batch.candidate_results[candidate_id] = CandidateRenderResult(
                     candidate_id=candidate_id,
+                    output_dir=candidate_dir,
+                    manifest_path=candidate_dir / "manifest.json",
                     error=error,
                 )
         failures = [
@@ -510,23 +615,67 @@ class JobService:
                 ),
             )
             provisional_output_dir = job.output_dir
-            job.output_dir = source.output_dir
+            job.video_id = source.metadata.video_id
+            job.source_artifacts = source.source_artifacts
+            self._log_source_cache(job, source)
+            self._source_fingerprints[job.job_id] = (
+                await asyncio.to_thread(
+                    self._load_source_fingerprint,
+                    source.metadata.video_id,
+                )
+            )
+            self._set_status(job, JobStatus.TRANSCRIBING, "Transcribing English audio.")
+            transcript = await self._load_or_create_transcript(job, source)
+            assert job.transcript_id is not None
+            assert job.render_id is not None
+            render_dir = self.video_store.render_dir(
+                source.metadata.video_id,
+                job.render_id,
+            )
+            job.output_dir = render_dir
+            job.manifest_path = render_dir / "manifest.json"
             self._finalize_provisional_output(
                 job.job_id,
                 provisional_output_dir,
                 job.output_dir,
             )
-            job.source_artifacts = source.source_artifacts
-            self._log_source_cache(job, source)
-            self._set_status(job, JobStatus.TRANSCRIBING, "Transcribing English audio.")
-            transcript = await self._run_stage(
-                job,
-                "transcription",
-                lambda: self.transcription_client.transcribe(
-                    source.source_artifacts.source_audio
-                ),
+            created_at = job.created_at
+            self.video_store.write_render(
+                video_id=source.metadata.video_id,
+                render_id=job.render_id,
+                operation_id=job.job_id,
+                kind=RenderKind.CUSTOM,
+                analysis_id=None,
+                candidate_id=None,
+                start_seconds=job.start_seconds,
+                end_seconds=job.end_seconds,
+                source_fingerprint=self._source_fingerprint_for_job(job),
+                transcript_id=job.transcript_id,
+                render_config={"subtitle_language": "zh-TW", "bilingual": True},
+                created_at=created_at,
+                completed_at=None,
+                render_state=RenderState.QUEUED,
+                publish_state=PublishState.NOT_UPLOADED,
+                log_path=Path("logs") / f"{job.job_id}.log",
             )
-            self.writer.write_json(job.output_dir / "analysis" / "transcript.json", transcript)
+            self.video_store.write_render(
+                video_id=source.metadata.video_id,
+                render_id=job.render_id,
+                operation_id=job.job_id,
+                kind=RenderKind.CUSTOM,
+                analysis_id=None,
+                candidate_id=None,
+                start_seconds=job.start_seconds,
+                end_seconds=job.end_seconds,
+                source_fingerprint=self._source_fingerprint_for_job(job),
+                transcript_id=job.transcript_id,
+                render_config={"subtitle_language": "zh-TW", "bilingual": True},
+                created_at=created_at,
+                completed_at=None,
+                render_state=RenderState.RENDERING,
+                publish_state=PublishState.NOT_UPLOADED,
+                log_path=Path("logs") / f"{job.job_id}.log",
+            )
             self._set_status(job, JobStatus.RENDERING, "Rendering the requested time range.")
             selection = Candidate(
                 candidate_id="custom",
@@ -536,11 +685,7 @@ class JobService:
                 selection_reason="User-selected direct render range.",
                 summary="Direct render selected by the user.",
             )
-            base_name = (
-                f"{sanitize_filename(source.metadata.title)}.custom"
-            )
-            render_dir = job.output_dir / "render"
-            clip = await self._run_stage(
+            await self._run_stage(
                 job,
                 "candidate_clip_render",
                 lambda: self.clip_engine.render(
@@ -549,10 +694,9 @@ class JobService:
                     selection=selection,
                     output_dir=render_dir,
                     work_dir=self.work_root / job.job_id,
-                    base_name=base_name,
                 ),
             )
-            metadata_path = render_dir / f"{base_name}.youtube-metadata.json"
+            metadata_path = render_dir / "youtube-metadata.json"
             await self._run_stage(
                 job,
                 "metadata_generation",
@@ -563,12 +707,25 @@ class JobService:
                     destination=metadata_path,
                 ),
             )
-            job.artifacts = RenderArtifacts(
-                traditional_chinese_srt=clip.traditional_chinese_srt.resolve(),
-                bilingual_ass=clip.bilingual_ass.resolve(),
-                burned_video=clip.burned_video.resolve(),
-                youtube_metadata=metadata_path.resolve(),
+            render = self.video_store.write_render(
+                video_id=source.metadata.video_id,
+                render_id=job.render_id,
+                operation_id=job.job_id,
+                kind=RenderKind.CUSTOM,
+                analysis_id=None,
+                candidate_id=None,
+                start_seconds=job.start_seconds,
+                end_seconds=job.end_seconds,
+                source_fingerprint=self._source_fingerprint_for_job(job),
+                transcript_id=job.transcript_id,
+                render_config={"subtitle_language": "zh-TW", "bilingual": True},
+                created_at=created_at,
+                completed_at=self.clock(),
+                render_state=RenderState.READY,
+                publish_state=PublishState.NOT_UPLOADED,
+                log_path=Path("logs") / f"{job.job_id}.log",
             )
+            job.artifacts = render.artifacts
             self._set_status(
                 job,
                 JobStatus.COMPLETED,
@@ -580,6 +737,7 @@ class JobService:
                 exc.error_code,
             )
             self._fail_job(job, exc)
+            self._write_failed_direct_render_manifest(job)
         except Exception as exc:
             get_job_logger(job.job_id, job.output_dir).exception(
                 "Unexpected direct render pipeline failure"
@@ -593,6 +751,7 @@ class JobService:
                     stage="rendering",
                 ),
             )
+            self._write_failed_direct_render_manifest(job)
 
     def _set_status(
         self,
@@ -624,7 +783,7 @@ class JobService:
 
     async def _load_or_create_transcript(
         self,
-        job: AnalysisJob,
+        job: AnalysisJob | DirectRenderJob,
         source: Any,
     ) -> Transcript:
         store = VideoStore(self.output_root, FileJobWriter())
@@ -689,7 +848,7 @@ class JobService:
 
     @staticmethod
     def _use_cached_transcript(
-        job: AnalysisJob,
+        job: AnalysisJob | DirectRenderJob,
         source: Any,
         cached: Any,
     ) -> Transcript:
@@ -703,6 +862,35 @@ class JobService:
             cached.manifest.cache_key,
         )
         return cached.transcript
+
+    def _source_fingerprint_for_job(
+        self,
+        job: AnalysisJob | DirectRenderJob,
+    ) -> str:
+        cached = self._source_fingerprints.get(job.job_id)
+        if cached is not None:
+            return cached
+        if job.video_id is None:
+            raise InsightCastError(
+                ErrorCode.SOURCE_CACHE_INVALID,
+                "Managed source identity is missing for rendering.",
+                details={"job_id": job.job_id},
+                stage="rendering",
+            )
+        fingerprint = self._load_source_fingerprint(job.video_id)
+        self._source_fingerprints[job.job_id] = fingerprint
+        return fingerprint
+
+    def _load_source_fingerprint(self, video_id: str) -> str:
+        lookup = self.video_store.load_source(video_id)
+        if lookup.entry is None:
+            raise InsightCastError(
+                ErrorCode.SOURCE_CACHE_INVALID,
+                "Managed source is required for rendering.",
+                details={"video_id": video_id},
+                stage="rendering",
+            )
+        return lookup.entry.manifest.source_fingerprint
 
     async def _run_stage(
         self,
@@ -789,6 +977,36 @@ class JobService:
             log_path=Path("logs") / f"{job.job_id}.log",
             error=job.error,
         )
+
+    def _write_failed_direct_render_manifest(self, job: DirectRenderJob) -> None:
+        if (
+            job.video_id is None
+            or job.render_id is None
+            or job.transcript_id is None
+            or job.error is None
+        ):
+            return
+        render = self.video_store.write_render(
+            video_id=job.video_id,
+            render_id=job.render_id,
+            operation_id=job.job_id,
+            kind=RenderKind.CUSTOM,
+            analysis_id=None,
+            candidate_id=None,
+            start_seconds=job.start_seconds,
+            end_seconds=job.end_seconds,
+            source_fingerprint=self._source_fingerprint_for_job(job),
+            transcript_id=job.transcript_id,
+            render_config={"subtitle_language": "zh-TW", "bilingual": True},
+            created_at=job.created_at,
+            completed_at=job.updated_at,
+            render_state=RenderState.FAILED,
+            publish_state=PublishState.NOT_UPLOADED,
+            log_path=Path("logs") / f"{job.job_id}.log",
+            render_error=job.error,
+        )
+        job.output_dir = render.directory
+        job.manifest_path = render.manifest_path
 
     @staticmethod
     def _as_job_error(exc: Exception, stage: str | None) -> JobError:

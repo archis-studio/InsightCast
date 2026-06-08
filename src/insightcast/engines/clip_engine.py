@@ -29,17 +29,16 @@ class ClipEngine:
         selection: Candidate,
         output_dir: Path,
         work_dir: Path,
-        base_name: str,
     ) -> ClipArtifacts:
         resolved_output_dir = output_dir.expanduser().resolve()
         resolved_work_dir = work_dir.expanduser().resolve()
         resolved_output_dir.mkdir(parents=True, exist_ok=True)
         resolved_work_dir.mkdir(parents=True, exist_ok=True)
 
-        temporary_clip = resolved_work_dir / f"{base_name}.unburned.mp4"
-        srt_path = resolved_output_dir / f"{base_name}.zh-TW.srt"
-        ass_path = resolved_output_dir / f"{base_name}.bilingual.ass"
-        burned_path = resolved_output_dir / f"{base_name}.bilingual.burned.mp4"
+        temporary_clip = resolved_work_dir / "video.unburned.mp4"
+        srt_path = resolved_output_dir / "subtitles.zh-TW.srt"
+        ass_path = resolved_output_dir / "subtitles.bilingual.ass"
+        burned_path = resolved_output_dir / "video.mp4"
 
         await self.ffmpeg.cut_clip(
             source_video,
@@ -69,4 +68,3 @@ class ClipEngine:
             bilingual_ass=ass_path,
             burned_video=burned_path,
         )
-
