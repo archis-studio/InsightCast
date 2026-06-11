@@ -169,21 +169,61 @@ def format_candidate(candidate: dict[str, object]) -> list[str]:
     ]
 
 
-def format_source_artifacts(artifacts: dict[str, object]) -> list[str]:
+def _source_artifacts(artifacts: dict[str, object]) -> dict[str, object]:
     source = artifacts.get("source")
-    if source is None:
-        return []
     if not isinstance(source, dict):
         raise ApiProtocolError("API protocol error: artifacts.source must be an object.")
-    lines = ["Source artifacts:"]
-    for name, path in source.items():
-        if path is None:
-            continue
-        if not isinstance(path, str):
-            raise ApiProtocolError(
-                f"API protocol error: source artifact '{name}' must be a path."
+    return source
+
+
+def _required_path(payload: dict[str, object], field: str) -> Path:
+    return Path(_required_string(payload, field))
+
+
+def format_analysis_artifacts(
+    artifacts: dict[str, object],
+    candidates: list[dict[str, object]],
+    *,
+    job_id: str,
+) -> list[str]:
+    analysis_id = _required_string(artifacts, "analysis_id")
+    transcript_id = _required_string(artifacts, "transcript_id")
+    manifest_path = _required_path(artifacts, "manifest_path")
+    analysis_dir = manifest_path.parent
+    if (
+        manifest_path.name != "manifest.json"
+        or analysis_dir.name != analysis_id
+        or analysis_dir.parent.name != "analyses"
+    ):
+        raise ApiProtocolError(
+            "API protocol error: analysis manifest path does not match analysis_id."
+        )
+    video_root = analysis_dir.parent.parent
+    source = _source_artifacts(artifacts)
+    transcript_path = _required_path(source, "transcript")
+    if transcript_path.parent.name != transcript_id:
+        raise ApiProtocolError(
+            "API protocol error: transcript path does not match transcript_id."
+        )
+
+    lines = [
+        f"Video root: {video_root}",
+        f"Analysis: {analysis_id} ({analysis_dir})",
+        f"Transcript: {transcript_id} ({transcript_path})",
+    ]
+    for candidate in candidates:
+        candidate_id = _required_string(candidate, "candidate_id").upper()
+        candidate_dir = analysis_dir / "candidates" / candidate_id
+        lines.extend(
+            (
+                f"Candidate {candidate_id}: {candidate_dir / 'candidate.json'}",
+                (
+                    f"Renders for candidate {candidate_id} will appear under "
+                    f"{candidate_dir / 'renders'}/"
+                ),
             )
-        lines.append(f"  {name}: {path}")
+        )
+    lines.append(f"Log: {video_root / 'logs' / f'{job_id}.log'}")
     return lines
 
 
@@ -209,19 +249,18 @@ def _validate_health(payload: dict[str, object]) -> tuple[str, str]:
     return ffmpeg, queue_worker
 
 
-def _pipeline_log_path(artifacts: object) -> Path | None:
+def _pipeline_log_path(payload: dict[str, object]) -> Path | None:
+    artifacts = payload.get("artifacts")
     if not isinstance(artifacts, dict):
         return None
-    source = artifacts.get("source")
-    if not isinstance(source, dict):
+    manifest_path = artifacts.get("manifest_path")
+    job_id = payload.get("job_id")
+    if not isinstance(manifest_path, str) or not isinstance(job_id, str):
         return None
-    for name in ("transcript", "candidates"):
-        value = source.get(name)
-        if isinstance(value, str) and value:
-            path = Path(value)
-            if path.parent.name == "analysis":
-                return path.parent.parent / "pipeline.log"
-    return None
+    analysis_dir = Path(manifest_path).parent
+    if analysis_dir.parent.name != "analyses":
+        return None
+    return analysis_dir.parent.parent / "logs" / f"{job_id}.log"
 
 
 def _print_failed_job(payload: dict[str, object], stderr: TextIO) -> None:
@@ -243,11 +282,11 @@ def _print_failed_job(payload: dict[str, object], stderr: TextIO) -> None:
     print(f"  error_code: {error_code}", file=stderr)
     print(f"  message: {message}", file=stderr)
     print(f"  details: {_format_details(details)}", file=stderr)
-    pipeline_log = _pipeline_log_path(payload.get("artifacts"))
+    pipeline_log = _pipeline_log_path(payload)
     if pipeline_log is not None:
-        print(f"  pipeline.log: {pipeline_log}", file=stderr)
+        print(f"  log: {pipeline_log}", file=stderr)
     else:
-        print("  Locate pipeline.log under OUTPUT_DIR/jobs/.", file=stderr)
+        print("  Locate the operation log under OUTPUT_DIR/videos/*/logs/.", file=stderr)
 
 
 def _print_success(payload: dict[str, object], stdout: TextIO) -> None:
@@ -257,13 +296,20 @@ def _print_success(payload: dict[str, object], stdout: TextIO) -> None:
         raise ApiProtocolError("API protocol error: candidates must be a list.")
     if not isinstance(artifacts, dict):
         raise ApiProtocolError("API protocol error: artifacts must be an object.")
+    job_id = _required_string(payload, "job_id")
+    validated_candidates: list[dict[str, object]] = []
     print("Candidates:", file=stdout)
     for candidate in candidates:
         if not isinstance(candidate, dict):
             raise ApiProtocolError("API protocol error: each candidate must be an object.")
+        validated_candidates.append(candidate)
         for line in format_candidate(candidate):
             print(line, file=stdout)
-    for line in format_source_artifacts(artifacts):
+    for line in format_analysis_artifacts(
+        artifacts,
+        validated_candidates,
+        job_id=job_id,
+    ):
         print(line, file=stdout)
     print("Analysis complete; no candidates were rendered.", file=stdout)
 
