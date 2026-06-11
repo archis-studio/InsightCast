@@ -29,6 +29,22 @@ class LocalWhisperClient:
         self.model_loader = model_loader
         self._model: Any | None = None
 
+    @property
+    def transcription_provider(self) -> str:
+        return "local-whisper"
+
+    @property
+    def transcription_model(self) -> str:
+        return f"{self.model_size}:{self.device}"
+
+    @property
+    def transcription_language(self) -> str:
+        return "en"
+
+    @property
+    def transcript_schema_version(self) -> int:
+        return 1
+
     async def transcribe(self, audio_path: Path) -> Transcript:
         try:
             if self._model is None:
@@ -73,4 +89,3 @@ class LocalWhisperClient:
         if segments:
             duration = max(duration, segments[-1].end_seconds)
         return Transcript(language="en", duration_seconds=duration, segments=segments)
-

@@ -45,6 +45,8 @@ def test_job_models_use_utc_timestamps_and_structured_values(tmp_path: Path) -> 
         status=JobStatus.FAILED,
         message="Curation failed.",
         output_dir=(tmp_path / "job").resolve(),
+        video_id="abc123def45",
+        analysis_id="20260606-000000-job-1a",
         error=error,
     )
 
@@ -70,4 +72,3 @@ def test_transcript_segment_and_render_artifacts_are_typed(tmp_path: Path) -> No
 
     assert segment.end_seconds > segment.start_seconds
     assert artifacts.burned_video.is_absolute()
-

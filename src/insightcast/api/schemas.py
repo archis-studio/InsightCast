@@ -1,10 +1,12 @@
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from insightcast.domain.enums import ErrorCode, JobStatus
 from insightcast.domain.models import Candidate, JobError, RenderBatch
+from insightcast.storage.manifests import AnalysisState, PublishState, RenderKind, RenderState
 from insightcast.utils.timecode import parse_timecode
 
 
@@ -150,3 +152,55 @@ class DirectRenderJobResponse(ApiModel):
     artifacts: dict[str, Any]
     created_at: datetime
     updated_at: datetime
+
+
+class VideoResponse(ApiModel):
+    video_id: str
+    title: str
+    uploader: str | None
+    upload_date: str | None
+    original_youtube_url: str
+    normalized_youtube_url: str
+    first_seen_at: datetime
+    last_seen_at: datetime
+    root: Path
+    manifest_path: Path
+
+
+class VideoAnalysisItem(ApiModel):
+    analysis_id: str
+    operation_id: str
+    state: AnalysisState
+    created_at: datetime
+    completed_at: datetime | None
+    transcript_id: str
+    candidate_count: int
+    candidates_path: Path
+    candidate_paths: dict[str, Path]
+    manifest_path: Path
+
+
+class VideoAnalysisListResponse(ApiModel):
+    video_id: str
+    analyses: list[VideoAnalysisItem]
+
+
+class VideoRenderItem(ApiModel):
+    render_id: str
+    operation_id: str
+    kind: RenderKind
+    analysis_id: str | None
+    candidate_id: str | None
+    start_seconds: float
+    end_seconds: float
+    render_state: RenderState
+    publish_state: PublishState
+    created_at: datetime
+    completed_at: datetime | None
+    manifest_path: Path
+    artifacts: dict[str, Path]
+
+
+class VideoRenderListResponse(ApiModel):
+    video_id: str
+    renders: list[VideoRenderItem]

@@ -35,6 +35,8 @@ class FakeService:
             status=JobStatus.QUEUED,
             message="Analysis job is queued.",
             output_dir=(self.tmp_path / "analysis").resolve(),
+            video_id="abc123DEF_-",
+            analysis_id="20260606-000000-analys",
             created_at=datetime(2026, 6, 6, tzinfo=UTC),
             updated_at=datetime(2026, 6, 6, tzinfo=UTC),
         )
@@ -50,6 +52,8 @@ class FakeService:
             status=JobStatus.WAITING_SELECTION,
             message="2 candidates are ready.",
             output_dir=(self.tmp_path / "analysis").resolve(),
+            video_id="abc123DEF_-",
+            analysis_id="20260606-000000-analys",
         )
 
     async def create_render(self, job_id: str, request: object) -> RenderBatch:
@@ -117,7 +121,10 @@ def test_analysis_routes_queue_get_render_and_list(tmp_path: Path) -> None:
 
     assert created.status_code == 202
     assert created.json()["job_id"] == "analysis-1"
-    assert created.json()["artifacts"] == {}
+    assert created.json()["artifacts"] == {
+        "video_id": "abc123DEF_-",
+        "analysis_id": "20260606-000000-analys",
+    }
     assert service.created[0]["candidate_count"] == 2
     assert fetched.status_code == 200
     assert fetched.json()["status"] == "WAITING_SELECTION"

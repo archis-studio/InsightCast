@@ -252,6 +252,13 @@ Endpoint 會先確認 burned MP4 與 metadata JSON 存在，再以 HTTP 501 回�
 
 ```text
 outputs/
+  videos/
+    <youtube-video-id>_<first-title>/
+      video.json
+      source/
+        source.mp4
+        audio.mp3
+        manifest.json
   jobs/
     <timestamp>_<video-title>_<job-id>/
       job_state.json
@@ -266,11 +273,6 @@ outputs/
             <title>.a.bilingual.ass
             <title>.a.bilingual.burned.mp4
             <title>.a.youtube-metadata.json
-  source-cache/
-    <youtube-video-id>/
-      source.mp4
-      audio.mp3
-      metadata.json
 ```
 
 Direct render 使用單獨的 `<timestamp>_<title>_direct_<job-id>/render/`。成功 render
@@ -286,7 +288,8 @@ uv run cast_cache remove abc123DEF_-
 uv run cast_cache clear --yes
 ```
 
-cleanup 只會操作 `outputs/source-cache/`，不會刪除 job analysis、render、state 或 log。
+cleanup 只會操作 `outputs/videos/<youtube-video-id>_<first-title>/source/`，不會刪除
+video manifest、job analysis、render、state 或 log。
 若歷史 job 所引用的 cache 已被刪除，現有完成品仍可檢查，但需要來源影片的新 render
 會以 `SOURCE_CACHE_MISSING` 失敗。
 

@@ -93,14 +93,12 @@ def test_direct_render_accepts_timecode_and_numeric_seconds(tmp_path: Path) -> N
     assert fetched.json()["artifacts"]["burned_video"].endswith("clip.mp4")
 
 
-def test_upload_stub_returns_paths_with_not_implemented(tmp_path: Path) -> None:
+def test_direct_render_job_upload_stub_route_is_removed(tmp_path: Path) -> None:
     client = make_client(tmp_path)
     with client:
         response = client.post("/api/v1/direct-render-jobs/direct-1/youtube-uploads")
 
-    assert response.status_code == 501
-    assert response.json()["error_code"] == "UPLOAD_NOT_IMPLEMENTED"
-    assert response.json()["details"]["burned_video"].endswith("clip.mp4")
+    assert response.status_code == 404
 
 
 def test_invalid_direct_time_range_uses_stable_error(tmp_path: Path) -> None:

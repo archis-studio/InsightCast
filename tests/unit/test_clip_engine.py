@@ -77,13 +77,15 @@ async def test_clip_engine_writes_assets_and_deletes_temporary_clip_on_success(
         selection=candidate(),
         output_dir=output_dir,
         work_dir=work_dir,
-        base_name="video-title.a",
     )
 
+    assert artifacts.traditional_chinese_srt.name == "subtitles.zh-TW.srt"
+    assert artifacts.bilingual_ass.name == "subtitles.bilingual.ass"
+    assert artifacts.burned_video.name == "video.mp4"
     assert artifacts.traditional_chinese_srt.read_text(encoding="utf-8").endswith("哈囉\n")
     assert "Style: English" in artifacts.bilingual_ass.read_text(encoding="utf-8")
     assert artifacts.burned_video.read_bytes() == b"burned"
-    assert not (work_dir / "video-title.a.unburned.mp4").exists()
+    assert not (work_dir / "video.unburned.mp4").exists()
 
 
 @pytest.mark.asyncio
@@ -98,8 +100,6 @@ async def test_clip_engine_retains_temporary_clip_when_render_fails(tmp_path: Pa
             selection=candidate(),
             output_dir=tmp_path / "output",
             work_dir=work_dir,
-            base_name="video-title.a",
         )
 
-    assert (work_dir / "video-title.a.unburned.mp4").exists()
-
+    assert (work_dir / "video.unburned.mp4").exists()

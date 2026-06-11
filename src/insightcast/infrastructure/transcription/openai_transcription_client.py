@@ -89,6 +89,22 @@ class OpenAITranscriptionClient:
         self.max_upload_mb = max_upload_mb
         self.chunker = chunker
 
+    @property
+    def transcription_provider(self) -> str:
+        return "openai"
+
+    @property
+    def transcription_model(self) -> str:
+        return self.model
+
+    @property
+    def transcription_language(self) -> str:
+        return "en"
+
+    @property
+    def transcript_schema_version(self) -> int:
+        return 1
+
     async def transcribe(self, audio_path: Path) -> Transcript:
         resolved_path = audio_path.expanduser().resolve()
         try:
@@ -148,4 +164,3 @@ class OpenAITranscriptionClient:
                 response_format="verbose_json",
                 timestamp_granularities=["segment"],
             )
-
