@@ -49,6 +49,11 @@ def job_response(
     error: dict[str, object] | None = None,
     artifacts: dict[str, object] | None = None,
 ) -> HttpResponse:
+    resolved_artifacts = artifacts
+    if resolved_artifacts is None:
+        resolved_artifacts = (
+            video_centric_artifacts() if status == "WAITING_SELECTION" else {}
+        )
     return response(
         200,
         {
@@ -58,11 +63,31 @@ def job_response(
             "candidates": candidates or [],
             "render_batches": [],
             "error": error,
-            "artifacts": artifacts or {},
+            "artifacts": resolved_artifacts,
             "created_at": "2026-06-07T00:00:00Z",
             "updated_at": "2026-06-07T00:00:01Z",
         },
     )
+
+
+def video_centric_artifacts() -> dict[str, object]:
+    video_root = "/tmp/outputs/videos/abc123DEF_-_video-title"
+    analysis_id = "20260607-120000-analys"
+    transcript_id = "tx-abcdef123456"
+    return {
+        "video_id": "abc123DEF_-",
+        "analysis_id": analysis_id,
+        "transcript_id": transcript_id,
+        "manifest_path": f"{video_root}/analyses/{analysis_id}/manifest.json",
+        "source": {
+            "source_video": f"{video_root}/source/source.mp4",
+            "source_audio": f"{video_root}/source/audio.mp3",
+            "transcript": (
+                f"{video_root}/transcripts/{transcript_id}/transcript.json"
+            ),
+            "candidates": f"{video_root}/analyses/{analysis_id}/candidates.json",
+        },
+    }
 
 
 class ScriptedRequester:
@@ -259,7 +284,7 @@ def test_polls_immediately_then_uses_configured_interval_and_prints_heartbeats()
     assert "INGESTING: Downloading the source video. (elapsed 5s)" in output
 
 
-def test_formats_candidates_and_source_artifacts() -> None:
+def test_formats_candidates_and_video_centric_artifact_paths() -> None:
     requester = ScriptedRequester(
         [
             healthy_response(),
@@ -279,14 +304,7 @@ def test_formats_candidates_and_source_artifacts() -> None:
                         "duration_seconds": 90,
                     }
                 ],
-                artifacts={
-                    "source": {
-                        "source_video": "/tmp/job-123/source.mp4",
-                        "source_audio": "/tmp/job-123/audio.mp3",
-                        "transcript": "/tmp/job-123/transcript.json",
-                        "candidates": "/tmp/job-123/candidates.json",
-                    }
-                },
+                artifacts=video_centric_artifacts(),
             ),
         ]
     )
@@ -301,10 +319,30 @@ def test_formats_candidates_and_source_artifacts() -> None:
         "Duration: 1m 30s",
         "Focused explanation",
         "The speaker explains the core idea.",
-        "/tmp/job-123/source.mp4",
-        "/tmp/job-123/audio.mp3",
-        "/tmp/job-123/transcript.json",
-        "/tmp/job-123/candidates.json",
+        "Video root: /tmp/outputs/videos/abc123DEF_-_video-title",
+        (
+            "Analysis: 20260607-120000-analys "
+            "(/tmp/outputs/videos/abc123DEF_-_video-title/"
+            "analyses/20260607-120000-analys)"
+        ),
+        (
+            "Transcript: tx-abcdef123456 "
+            "(/tmp/outputs/videos/abc123DEF_-_video-title/"
+            "transcripts/tx-abcdef123456/transcript.json)"
+        ),
+        (
+            "Candidate A: /tmp/outputs/videos/abc123DEF_-_video-title/"
+            "analyses/20260607-120000-analys/candidates/A/candidate.json"
+        ),
+        (
+            "Log: /tmp/outputs/videos/abc123DEF_-_video-title/"
+            "logs/job-123.log"
+        ),
+        (
+            "Renders for candidate A will appear under "
+            "/tmp/outputs/videos/abc123DEF_-_video-title/"
+            "analyses/20260607-120000-analys/candidates/A/renders/"
+        ),
         "Analysis complete; no candidates were rendered.",
     ):
         assert expected in output
@@ -381,14 +419,7 @@ def test_failed_job_prints_structured_error_and_pipeline_log() -> None:
                     "message": "Audio could not be transcribed.",
                     "details": {"chunk": 3},
                 },
-                artifacts={
-                    "source": {
-                        "source_video": "/tmp/source-cache/abc123/source.mp4",
-                        "source_audio": "/tmp/source-cache/abc123/audio.mp3",
-                        "transcript": "/tmp/job-123/analysis/transcript.json",
-                        "candidates": None,
-                    }
-                },
+                artifacts=video_centric_artifacts(),
             ),
         ]
     )
@@ -400,7 +431,9 @@ def test_failed_job_prints_structured_error_and_pipeline_log() -> None:
     assert "error_code: TRANSCRIPTION_FAILED" in errors
     assert "Audio could not be transcribed." in errors
     assert '"chunk": 3' in errors
-    assert "/tmp/job-123/pipeline.log" in errors
+    assert (
+        "/tmp/outputs/videos/abc123DEF_-_video-title/logs/job-123.log" in errors
+    )
 
 
 def test_poll_connection_failure_retains_job_id_without_reposting() -> None:
