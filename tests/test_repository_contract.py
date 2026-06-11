@@ -42,6 +42,11 @@ def test_agents_documents_canonical_analysis_workflow() -> None:
         'uv run cast_analyze "<youtube-url>"',
         "--verbose",
         "WAITING_SELECTION",
+        "video root",
+        "analysis ID",
+        "transcript reuse",
+        "candidate directories",
+        "operation log",
         "pipeline.log",
         "Do not start or stop",
         "Do not queue renders",
@@ -101,6 +106,23 @@ def test_readme_documents_local_mvp_operations_without_docker_yet() -> None:
     ]
     for text in required_text:
         assert text in readme, text
+
+
+def test_readme_documents_video_centric_output_lookup() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    for text in [
+        "outputs/videos/",
+        "<video-id>_<title-slug>",
+        "analyses/<analysis-id>/candidates/A/renders/<render-id>/",
+        "renders/custom/<render-id>/",
+        "source fingerprint",
+        "transcription provider",
+        "not-uploaded",
+        "舊版",
+        "不會自動遷移",
+        "find outputs/videos",
+    ]:
+        assert text in readme
 
 
 def test_docker_contract_uses_cpu_python_ffmpeg_non_root_and_documented_volume() -> None:

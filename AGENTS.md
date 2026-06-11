@@ -10,6 +10,9 @@ Use the repository CLI as the canonical way to analyze a YouTube URL.
 4. Add `--verbose` when raw API payloads are needed for diagnosis.
 5. Treat `WAITING_SELECTION` as successful analysis completion.
 6. Report candidate IDs, titles, time ranges, summaries, and source artifact paths.
-7. On failure, report the structured console error and inspect the referenced
+7. Also report the video root, analysis ID and directory, whether transcript reuse
+   occurred when the CLI or log makes it known, candidate directories, and the
+   operation log path.
+8. On failure, report the structured console error and inspect the referenced
    `pipeline.log` when available.
-8. Do not queue renders unless the user explicitly requests rendering.
+9. Do not queue renders unless the user explicitly requests rendering.
