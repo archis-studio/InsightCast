@@ -8,6 +8,11 @@
 
 **Tech Stack:** Python 3.13, Pydantic v2, FastAPI, pathlib, hashlib SHA-256, pytest, Ruff, uv
 
+**Implementation status:** Completed. The checklist below is retained as the
+historical implementation sequence; current behavior is documented in `README.md`
+and enforced by the repository, API, CLI, storage, and acceptance tests named in
+this plan.
+
 ---
 
 ## File Structure
