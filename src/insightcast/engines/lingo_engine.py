@@ -7,6 +7,8 @@ from insightcast.domain.enums import ErrorCode
 from insightcast.domain.models import TranscriptSegment
 from insightcast.prompts import translation as translation_prompt
 
+TRANSLATION_BATCH_SIZE = 40
+
 
 class LingoModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -55,20 +57,35 @@ class LingoEngine:
         ]
         if self.client is None or self.model is None:
             raise self._generation_error("Translation client is not configured.")
-        response = await self.client.parse(
-            model=self.model,
-            system_prompt=translation_prompt.SYSTEM_PROMPT,
-            user_prompt=translation_prompt.build_user_prompt(
-                items=[
-                    {"segment_id": segment.segment_id, "text": segment.text}
-                    for segment in selected
-                ]
-            ),
-            response_model=TranslationResponse,
-        )
+        translations: list[TranslationItem] = []
+        for batch_index, offset in enumerate(
+            range(0, len(selected), TRANSLATION_BATCH_SIZE)
+        ):
+            batch = selected[offset : offset + TRANSLATION_BATCH_SIZE]
+            response = await self.client.parse(
+                model=self.model,
+                system_prompt=translation_prompt.SYSTEM_PROMPT,
+                user_prompt=translation_prompt.build_user_prompt(
+                    items=[
+                        {"segment_id": segment.segment_id, "text": segment.text}
+                        for segment in batch
+                    ]
+                ),
+                response_model=TranslationResponse,
+            )
+            source_ids = [segment.segment_id for segment in batch]
+            translation_ids = [translation.segment_id for translation in response.items]
+            if translation_ids != source_ids:
+                raise self._generation_error(
+                    "Translation batch must map one-to-one to source subtitle items.",
+                    batch_index=batch_index,
+                    source_segment_ids=source_ids,
+                    translation_segment_ids=translation_ids,
+                )
+            translations.extend(response.items)
         return self.prepare_subtitle_items(
             segments=segments,
-            translations=response.items,
+            translations=translations,
             clip_start_seconds=clip_start_seconds,
             clip_end_seconds=clip_end_seconds,
         )
