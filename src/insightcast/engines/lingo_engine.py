@@ -62,32 +62,63 @@ class LingoEngine:
             range(0, len(selected), TRANSLATION_BATCH_SIZE)
         ):
             batch = selected[offset : offset + TRANSLATION_BATCH_SIZE]
-            response = await self.client.parse(
-                model=self.model,
-                system_prompt=translation_prompt.SYSTEM_PROMPT,
-                user_prompt=translation_prompt.build_user_prompt(
-                    items=[
-                        {"segment_id": segment.segment_id, "text": segment.text}
-                        for segment in batch
-                    ]
-                ),
-                response_model=TranslationResponse,
-            )
-            source_ids = [segment.segment_id for segment in batch]
-            translation_ids = [translation.segment_id for translation in response.items]
-            if translation_ids != source_ids:
-                raise self._generation_error(
-                    "Translation batch must map one-to-one to source subtitle items.",
+            translations.extend(
+                await self._translate_batch(
+                    batch,
                     batch_index=batch_index,
-                    source_segment_ids=source_ids,
-                    translation_segment_ids=translation_ids,
+                    batch_path=[],
                 )
-            translations.extend(response.items)
+            )
         return self.prepare_subtitle_items(
             segments=segments,
             translations=translations,
             clip_start_seconds=clip_start_seconds,
             clip_end_seconds=clip_end_seconds,
+        )
+
+    async def _translate_batch(
+        self,
+        batch: list[TranscriptSegment],
+        *,
+        batch_index: int,
+        batch_path: list[int],
+    ) -> list[TranslationItem]:
+        assert self.client is not None
+        assert self.model is not None
+        response = await self.client.parse(
+            model=self.model,
+            system_prompt=translation_prompt.SYSTEM_PROMPT,
+            user_prompt=translation_prompt.build_user_prompt(
+                items=[
+                    {"segment_id": segment.segment_id, "text": segment.text}
+                    for segment in batch
+                ]
+            ),
+            response_model=TranslationResponse,
+        )
+        source_ids = [segment.segment_id for segment in batch]
+        translation_ids = [translation.segment_id for translation in response.items]
+        if translation_ids == source_ids:
+            return response.items
+        if len(batch) > 1:
+            midpoint = len(batch) // 2
+            left = await self._translate_batch(
+                batch[:midpoint],
+                batch_index=batch_index,
+                batch_path=[*batch_path, 0],
+            )
+            right = await self._translate_batch(
+                batch[midpoint:],
+                batch_index=batch_index,
+                batch_path=[*batch_path, 1],
+            )
+            return left + right
+        raise self._generation_error(
+            "Translation batch must map one-to-one to source subtitle items.",
+            batch_index=batch_index,
+            batch_path=batch_path,
+            source_segment_ids=source_ids,
+            translation_segment_ids=translation_ids,
         )
 
     def prepare_subtitle_items(
