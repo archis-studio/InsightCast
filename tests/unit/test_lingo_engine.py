@@ -67,7 +67,7 @@ async def test_translate_clip_batches_long_requests_in_source_order() -> None:
 
 
 @pytest.mark.asyncio
-async def test_translate_clip_reports_later_batch_mapping_mismatch() -> None:
+async def test_translate_clip_splits_mismatched_batch_and_preserves_order() -> None:
     segments = [
         TranscriptSegment(
             segment_id=f"s{index}",
@@ -75,37 +75,53 @@ async def test_translate_clip_reports_later_batch_mapping_mismatch() -> None:
             end_seconds=index + 1,
             text=f"Source {index}",
         )
-        for index in range(45)
+        for index in range(40)
     ]
     client = RecordingTranslationClient(
         [
-            translation_response(*[f"s{index}" for index in range(0, 40)]),
-            translation_response(*[f"s{index}" for index in range(40, 44)]),
+            translation_response(*[f"s{index}" for index in range(0, 38)]),
+            translation_response(*[f"s{index}" for index in range(0, 20)]),
+            translation_response(*[f"s{index}" for index in range(20, 40)]),
         ]
     )
 
+    result = await LingoEngine(client=client, model="gpt-translation").translate_clip(
+        segments=segments,
+        clip_start_seconds=0,
+        clip_end_seconds=40,
+    )
+
+    assert [
+        len(json.loads(str(call["user_prompt"]))["items"])
+        for call in client.calls
+    ] == [40, 20, 20]
+    assert [item.segment_id for item in result] == [
+        f"s{index}" for index in range(40)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_translate_clip_reports_terminal_single_item_mapping_mismatch() -> None:
+    segment = TranscriptSegment(
+        segment_id="s0",
+        start_seconds=0,
+        end_seconds=1,
+        text="Source",
+    )
+    client = RecordingTranslationClient([TranslationResponse(items=[])])
+
     with pytest.raises(InsightCastError) as exc_info:
         await LingoEngine(client=client, model="gpt-translation").translate_clip(
-            segments=segments,
+            segments=[segment],
             clip_start_seconds=0,
-            clip_end_seconds=45,
+            clip_end_seconds=1,
         )
 
     assert exc_info.value.error_code == ErrorCode.SUBTITLE_GENERATION_FAILED
-    assert exc_info.value.details["batch_index"] == 1
-    assert exc_info.value.details["source_segment_ids"] == [
-        "s40",
-        "s41",
-        "s42",
-        "s43",
-        "s44",
-    ]
-    assert exc_info.value.details["translation_segment_ids"] == [
-        "s40",
-        "s41",
-        "s42",
-        "s43",
-    ]
+    assert exc_info.value.details["batch_index"] == 0
+    assert exc_info.value.details["batch_path"] == []
+    assert exc_info.value.details["source_segment_ids"] == ["s0"]
+    assert exc_info.value.details["translation_segment_ids"] == []
 
 
 def test_prepare_subtitle_items_filters_clamps_and_relativizes_segments() -> None:
