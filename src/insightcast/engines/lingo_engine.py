@@ -98,7 +98,15 @@ class LingoEngine:
         )
         source_ids = [segment.segment_id for segment in batch]
         translation_ids = [translation.segment_id for translation in response.items]
-        if translation_ids == source_ids:
+        unreadable = next(
+            (
+                translation
+                for translation in response.items
+                if not _is_readable_translation(translation.text)
+            ),
+            None,
+        )
+        if translation_ids == source_ids and unreadable is None:
             return response.items
         if len(batch) > 1:
             midpoint = len(batch) // 2
@@ -113,6 +121,14 @@ class LingoEngine:
                 batch_path=[*batch_path, 1],
             )
             return left + right
+        if unreadable is not None:
+            raise self._generation_error(
+                "Translation must contain readable text.",
+                batch_index=batch_index,
+                batch_path=batch_path,
+                segment_id=unreadable.segment_id,
+                translation_text=unreadable.text,
+            )
         raise self._generation_error(
             "Translation batch must map one-to-one to source subtitle items.",
             batch_index=batch_index,
@@ -150,9 +166,7 @@ class LingoEngine:
         items: list[SubtitleItem] = []
         for segment, translation in zip(selected, translations, strict=True):
             translated_text = translation.text.strip()
-            if not translated_text or not any(
-                character.isalnum() for character in translated_text
-            ):
+            if not _is_readable_translation(translated_text):
                 raise self._generation_error(
                     "Translation must contain readable text.",
                     segment_id=segment.segment_id,
@@ -178,3 +192,8 @@ class LingoEngine:
             details=details,
             stage="subtitle_generation",
         )
+
+
+def _is_readable_translation(text: str) -> bool:
+    stripped = text.strip()
+    return bool(stripped) and any(character.isalnum() for character in stripped)

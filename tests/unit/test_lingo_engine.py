@@ -31,6 +31,17 @@ def translation_response(*segment_ids: str) -> TranslationResponse:
     )
 
 
+def translation_response_with_text(
+    *items: tuple[str, str],
+) -> TranslationResponse:
+    return TranslationResponse(
+        items=[
+            TranslationItem(segment_id=segment_id, text=text)
+            for segment_id, text in items
+        ]
+    )
+
+
 @pytest.mark.asyncio
 async def test_translate_clip_batches_long_requests_in_source_order() -> None:
     segments = [
@@ -122,6 +133,69 @@ async def test_translate_clip_reports_terminal_single_item_mapping_mismatch() ->
     assert exc_info.value.details["batch_path"] == []
     assert exc_info.value.details["source_segment_ids"] == ["s0"]
     assert exc_info.value.details["translation_segment_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_translate_clip_splits_batch_with_unreadable_translation() -> None:
+    segments = [
+        TranscriptSegment(
+            segment_id="s0",
+            start_seconds=0,
+            end_seconds=1,
+            text="Within",
+        ),
+        TranscriptSegment(
+            segment_id="s1",
+            start_seconds=1,
+            end_seconds=2,
+            text="constraints",
+        ),
+    ]
+    client = RecordingTranslationClient(
+        [
+            translation_response_with_text(("s0", "..."), ("s1", "限制")),
+            translation_response_with_text(("s0", "在範圍內")),
+            translation_response_with_text(("s1", "限制")),
+        ]
+    )
+
+    result = await LingoEngine(client=client, model="gpt-translation").translate_clip(
+        segments=segments,
+        clip_start_seconds=0,
+        clip_end_seconds=2,
+    )
+
+    assert [
+        len(json.loads(str(call["user_prompt"]))["items"])
+        for call in client.calls
+    ] == [2, 1, 1]
+    assert [item.traditional_chinese_text for item in result] == ["在範圍內", "限制"]
+
+
+@pytest.mark.asyncio
+async def test_translate_clip_reports_terminal_unreadable_translation() -> None:
+    segment = TranscriptSegment(
+        segment_id="s0",
+        start_seconds=0,
+        end_seconds=1,
+        text="Within",
+    )
+    client = RecordingTranslationClient(
+        [translation_response_with_text(("s0", "..."))]
+    )
+
+    with pytest.raises(InsightCastError) as exc_info:
+        await LingoEngine(client=client, model="gpt-translation").translate_clip(
+            segments=[segment],
+            clip_start_seconds=0,
+            clip_end_seconds=1,
+        )
+
+    assert exc_info.value.error_code == ErrorCode.SUBTITLE_GENERATION_FAILED
+    assert exc_info.value.details["batch_index"] == 0
+    assert exc_info.value.details["batch_path"] == []
+    assert exc_info.value.details["segment_id"] == "s0"
+    assert exc_info.value.details["translation_text"] == "..."
 
 
 def test_prepare_subtitle_items_filters_clamps_and_relativizes_segments() -> None:
