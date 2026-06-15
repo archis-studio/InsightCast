@@ -6,9 +6,14 @@ from threading import Barrier
 
 import pytest
 
-from insightcast.core.logging import get_job_logger
-from insightcast.domain.enums import JobStatus, JobType
-from insightcast.domain.models import AnalysisJob
+from insightcast.core.logging import (
+    get_job_logger,
+    log_task_failure,
+    log_task_stage,
+    log_task_status,
+)
+from insightcast.domain.enums import ErrorCode, JobStatus, JobType
+from insightcast.domain.models import AnalysisJob, JobError
 from insightcast.storage.file_job_writer import FileJobWriter
 
 
@@ -23,6 +28,115 @@ def make_job(tmp_path: Path) -> AnalysisJob:
         output_dir=(tmp_path / "nested" / "job").resolve(),
         video_id="abc123DEF_-",
         analysis_id="20260606-143000-job-1a",
+    )
+
+
+class _CaptureHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@pytest.fixture
+def task_log_records() -> list[logging.LogRecord]:
+    logger = logging.getLogger("insightcast.task")
+    handler = _CaptureHandler()
+    previous_handlers = list(logger.handlers)
+    previous_level = logger.level
+    previous_propagate = logger.propagate
+    logger.handlers = [handler]
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    try:
+        yield handler.records
+    finally:
+        logger.handlers = previous_handlers
+        logger.setLevel(previous_level)
+        logger.propagate = previous_propagate
+
+
+def test_log_task_status_emits_expected_info_message(
+    tmp_path: Path,
+    task_log_records: list[logging.LogRecord],
+) -> None:
+    job = make_job(tmp_path)
+
+    log_task_status(job)
+
+    [record] = task_log_records
+    assert record.name == "insightcast.task"
+    assert record.levelno == logging.INFO
+    assert record.msg == "task job_id=%s type=%s status=%s message=%r"
+    assert record.args == (job.job_id, job.job_type, job.status, job.message)
+    assert record.getMessage() == (
+        "task job_id=job-1 type=ANALYSIS status=QUEUED message='Queued.'"
+    )
+
+
+@pytest.mark.parametrize("event", ["started", "completed"])
+def test_log_task_stage_emits_expected_info_message_without_elapsed(
+    tmp_path: Path,
+    event: str,
+    task_log_records: list[logging.LogRecord],
+) -> None:
+    job = make_job(tmp_path)
+
+    log_task_stage(job, "transcription", event)
+
+    [record] = task_log_records
+    assert record.name == "insightcast.task"
+    assert record.levelno == logging.INFO
+    assert record.msg == "task job_id=%s type=%s stage=%s event=%s"
+    assert record.args == (job.job_id, job.job_type, "transcription", event)
+    assert record.getMessage() == (
+        f"task job_id=job-1 type=ANALYSIS stage=transcription event={event}"
+    )
+
+
+def test_log_task_stage_emits_expected_error_message_with_elapsed(
+    tmp_path: Path,
+    task_log_records: list[logging.LogRecord],
+) -> None:
+    job = make_job(tmp_path)
+
+    log_task_stage(job, "render", "failed", elapsed_seconds=12.3456)
+
+    [record] = task_log_records
+    assert record.name == "insightcast.task"
+    assert record.levelno == logging.ERROR
+    assert record.msg == "task job_id=%s type=%s stage=%s event=%s elapsed_seconds=%.3f"
+    assert record.args == (job.job_id, job.job_type, "render", "failed", 12.3456)
+    assert record.getMessage() == (
+        "task job_id=job-1 type=ANALYSIS stage=render event=failed "
+        "elapsed_seconds=12.346"
+    )
+
+
+def test_log_task_failure_emits_expected_error_message_without_traceback(
+    tmp_path: Path,
+    task_log_records: list[logging.LogRecord],
+) -> None:
+    job = make_job(tmp_path)
+    error = JobError(
+        error_code=ErrorCode.TRANSCRIPTION_FAILED,
+        message="Transcript failed.",
+    )
+
+    log_task_failure(job, error)
+
+    [record] = task_log_records
+    assert record.name == "insightcast.task"
+    assert record.levelno == logging.ERROR
+    assert record.msg == "task job_id=%s type=%s event=failed error_code=%s stage=%s"
+    assert record.args == (job.job_id, job.job_type, error.error_code, "unknown")
+    assert record.exc_info is None
+    assert record.exc_text is None
+    assert record.getMessage() == (
+        "task job_id=job-1 type=ANALYSIS event=failed "
+        "error_code=TRANSCRIPTION_FAILED stage=unknown"
     )
 
 
@@ -106,4 +220,5 @@ def test_get_job_logger_writes_one_pipeline_log_without_duplicate_handlers(
         handler for handler in logger.handlers if isinstance(handler, logging.FileHandler)
     ]
     assert len(file_handlers) == 1
+    assert logger.propagate is False
     assert "處理開始" in (output_dir / "pipeline.log").read_text(encoding="utf-8")

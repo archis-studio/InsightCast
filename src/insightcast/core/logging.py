@@ -1,7 +1,10 @@
 import logging
 from pathlib import Path
 
+from insightcast.domain.models import BaseJob, JobError
+
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+_TASK_LOGGER = logging.getLogger("insightcast.task")
 
 
 def get_job_log_path(job_id: str, output_dir: Path) -> Path:
@@ -38,3 +41,38 @@ def get_job_logger(job_id: str, output_dir: Path) -> logging.Logger:
         handler.setFormatter(logging.Formatter(_LOG_FORMAT))
         logger.addHandler(handler)
     return logger
+
+
+def log_task_status(job: BaseJob) -> None:
+    _TASK_LOGGER.info(
+        "task job_id=%s type=%s status=%s message=%r",
+        job.job_id,
+        job.job_type,
+        job.status,
+        job.message,
+    )
+
+
+def log_task_stage(
+    job: BaseJob,
+    stage: str,
+    event: str,
+    elapsed_seconds: float | None = None,
+) -> None:
+    message = "task job_id=%s type=%s stage=%s event=%s"
+    args: tuple[object, ...] = (job.job_id, job.job_type, stage, event)
+    if elapsed_seconds is not None:
+        message += " elapsed_seconds=%.3f"
+        args += (elapsed_seconds,)
+    log = _TASK_LOGGER.error if event == "failed" else _TASK_LOGGER.info
+    log(message, *args)
+
+
+def log_task_failure(job: BaseJob, error: JobError) -> None:
+    _TASK_LOGGER.error(
+        "task job_id=%s type=%s event=failed error_code=%s stage=%s",
+        job.job_id,
+        job.job_type,
+        error.error_code,
+        error.stage or "unknown",
+    )
