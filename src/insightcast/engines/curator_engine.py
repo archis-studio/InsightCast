@@ -420,21 +420,30 @@ def _normalize_candidate(
     if not overlapping_indexes:
         return None
 
+    overlap_prefix = [0.0]
+    for segment in segments:
+        overlap_prefix.append(
+            overlap_prefix[-1]
+            + _segment_overlap(
+                segment,
+                candidate.start_seconds,
+                candidate.end_seconds,
+            )
+        )
+
+    first_overlap_index = overlapping_indexes[0]
+    last_overlap_index = overlapping_indexes[-1]
     options: list[tuple[int, float, float, int, int]] = []
-    for start_index, start_segment in enumerate(segments):
-        for end_index in range(start_index, len(segments)):
+    for start_index in range(last_overlap_index + 1):
+        start_segment = segments[start_index]
+        first_end_index = max(start_index, first_overlap_index)
+        for end_index in range(first_end_index, len(segments)):
             duration = _window_duration(segments, start_index, end_index)
             if duration > final_max_duration_seconds:
                 break
             if duration < final_min_duration_seconds:
                 continue
-            retained_overlap = _window_overlap(
-                segments,
-                start_index,
-                end_index,
-                candidate.start_seconds,
-                candidate.end_seconds,
-            )
+            retained_overlap = overlap_prefix[end_index + 1] - overlap_prefix[start_index]
             if retained_overlap <= 0:
                 continue
             if target_min_duration_seconds <= duration <= target_max_duration_seconds:

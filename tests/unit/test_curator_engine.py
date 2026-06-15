@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from insightcast.core.exceptions import InsightCastError
 from insightcast.domain.enums import ErrorCode
 from insightcast.domain.models import Transcript, TranscriptSegment
+from insightcast.engines import curator_engine
 from insightcast.engines.curator_engine import (
     CuratorCandidateOutput,
     CuratorEngine,
@@ -497,6 +498,31 @@ async def test_curator_prefers_accepted_window_over_final_window() -> None:
 
     candidate = result.candidates[0]
     assert (candidate.start_seconds, candidate.end_seconds) == (0, 750)
+
+
+@pytest.mark.asyncio
+async def test_curator_normalizes_large_transcript_without_rescanning_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_window_rescan(*args: object, **kwargs: object) -> float:
+        raise AssertionError("normalization must use constant-time window overlap")
+
+    monkeypatch.setattr(curator_engine, "_window_overlap", reject_window_rescan)
+    segments = [(second, second + 1) for second in range(1000)]
+    client = FakeStructuredClient(
+        [CuratorResponse(candidates=[output("A", 500, 520)])]
+    )
+
+    result = await CuratorEngine(client=client, model="gpt-curator").select_candidates(
+        transcript=segmented_transcript(*segments),
+        topics=valid_topics(),
+        candidate_count=1,
+        min_duration_minutes=8,
+        max_duration_minutes=12,
+    )
+
+    candidate = result.candidates[0]
+    assert (candidate.start_seconds, candidate.end_seconds) == (40, 520)
 
 
 @pytest.mark.asyncio
