@@ -84,6 +84,21 @@ def topic(
     )
 
 
+def valid_topics(candidate_count: int = 1) -> TopicDiscoveryResponse:
+    topic_count = candidate_count * 2
+    return TopicDiscoveryResponse(
+        topics=[
+            topic(
+                f"T{index + 1}",
+                index * 300,
+                (index + 1) * 300,
+                1 - (index / topic_count),
+            )
+            for index in range(topic_count)
+        ]
+    )
+
+
 @pytest.mark.asyncio
 async def test_discover_topics_requests_larger_ranked_pool() -> None:
     client = FakeStructuredClient(
@@ -250,6 +265,31 @@ async def test_discover_topics_raises_invalid_llm_output_after_retry() -> None:
 
 
 @pytest.mark.asyncio
+async def test_curate_discovers_topics_then_selects_candidates() -> None:
+    client = FakeStructuredClient(
+        [
+            valid_topics(),
+            CuratorResponse(candidates=[output("A", 0, 600)]),
+        ]
+    )
+
+    result = await CuratorEngine(client=client, model="gpt-curator").curate(
+        transcript=transcript(),
+        candidate_count=1,
+        min_duration_minutes=8,
+        max_duration_minutes=12,
+    )
+
+    assert len(client.calls) == 2
+    assert client.calls[0]["response_model"] is TopicDiscoveryResponse
+    assert client.calls[1]["response_model"] is CuratorResponse
+    candidate_prompt = str(client.calls[1]["user_prompt"])
+    assert '"topic_id": "T1"' in candidate_prompt
+    assert '"topic_id": "T2"' in candidate_prompt
+    assert result.prompt_version == "topic-discovery-v1+curator-v3"
+
+
+@pytest.mark.asyncio
 async def test_curator_accepts_exact_ordered_candidates_and_overlap() -> None:
     client = FakeStructuredClient(
         [
@@ -263,8 +303,9 @@ async def test_curator_accepts_exact_ordered_candidates_and_overlap() -> None:
     )
     engine = CuratorEngine(client=client, model="gpt-curator")
 
-    result = await engine.curate(
+    result = await engine.select_candidates(
         transcript=transcript(),
+        topics=valid_topics(candidate_count=2),
         candidate_count=2,
         min_duration_minutes=8,
         max_duration_minutes=12,
@@ -285,8 +326,9 @@ async def test_curator_retries_once_with_validation_feedback() -> None:
     )
     engine = CuratorEngine(client=client, model="gpt-curator")
 
-    result = await engine.curate(
+    result = await engine.select_candidates(
         transcript=transcript(),
+        topics=valid_topics(),
         candidate_count=1,
         min_duration_minutes=8,
         max_duration_minutes=12,
@@ -356,8 +398,9 @@ async def test_curator_normalizes_candidates_to_complete_segments(
     candidate = output("A", *proposed, title="Preserved title")
     client = FakeStructuredClient([CuratorResponse(candidates=[candidate])])
 
-    result = await CuratorEngine(client=client, model="gpt-curator").curate(
+    result = await CuratorEngine(client=client, model="gpt-curator").select_candidates(
         transcript=segmented_transcript(*segments),
+        topics=valid_topics(),
         candidate_count=1,
         min_duration_minutes=8,
         max_duration_minutes=12,
@@ -381,8 +424,9 @@ async def test_curator_retries_when_candidate_does_not_overlap_transcript() -> N
     )
 
     with pytest.raises(InsightCastError) as exc_info:
-        await CuratorEngine(client=client, model="gpt-curator").curate(
+        await CuratorEngine(client=client, model="gpt-curator").select_candidates(
             transcript=segmented_transcript((0, 300), (300, 600)),
+            topics=valid_topics(),
             candidate_count=1,
             min_duration_minutes=8,
             max_duration_minutes=12,
@@ -402,8 +446,9 @@ async def test_curator_retries_when_transcript_has_no_segments() -> None:
     )
 
     with pytest.raises(InsightCastError) as exc_info:
-        await CuratorEngine(client=client, model="gpt-curator").curate(
+        await CuratorEngine(client=client, model="gpt-curator").select_candidates(
             transcript=Transcript(language="en", duration_seconds=600, segments=[]),
+            topics=valid_topics(),
             candidate_count=1,
             min_duration_minutes=8,
             max_duration_minutes=12,
@@ -423,8 +468,9 @@ async def test_curator_rejects_when_no_segment_window_fits_accepted_duration() -
     )
 
     with pytest.raises(InsightCastError) as exc_info:
-        await CuratorEngine(client=client, model="gpt-curator").curate(
+        await CuratorEngine(client=client, model="gpt-curator").select_candidates(
             transcript=segmented_transcript((0, 900)),
+            topics=valid_topics(),
             candidate_count=1,
             min_duration_minutes=8,
             max_duration_minutes=12,
@@ -443,8 +489,9 @@ async def test_second_undersized_result_raises_insufficient_candidates() -> None
     )
 
     with pytest.raises(InsightCastError) as exc_info:
-        await CuratorEngine(client=client, model="gpt-curator").curate(
+        await CuratorEngine(client=client, model="gpt-curator").select_candidates(
             transcript=transcript(),
+            topics=valid_topics(candidate_count=2),
             candidate_count=2,
             min_duration_minutes=8,
             max_duration_minutes=12,
@@ -474,8 +521,9 @@ async def test_second_invalid_result_raises_invalid_llm_output(
     )
 
     with pytest.raises(InsightCastError) as exc_info:
-        await CuratorEngine(client=client, model="gpt-curator").curate(
+        await CuratorEngine(client=client, model="gpt-curator").select_candidates(
             transcript=transcript(),
+            topics=valid_topics(),
             candidate_count=1,
             min_duration_minutes=8,
             max_duration_minutes=12,

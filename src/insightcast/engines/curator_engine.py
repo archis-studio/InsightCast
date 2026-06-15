@@ -9,6 +9,7 @@ from insightcast.domain.models import Candidate, Transcript, TranscriptSegment
 from insightcast.prompts import curator, topic_discovery
 
 ACCEPTED_DURATION_TOLERANCE_SECONDS = 60
+FINAL_DURATION_SEGMENT_TOLERANCE_SECONDS = 30
 TOPIC_POOL_MULTIPLIER = 2
 
 
@@ -189,6 +190,27 @@ class CuratorEngine:
         min_duration_minutes: float,
         max_duration_minutes: float,
     ) -> CurationResult:
+        topics = await self.discover_topics(
+            transcript=transcript,
+            candidate_count=candidate_count,
+        )
+        return await self.select_candidates(
+            transcript=transcript,
+            topics=topics,
+            candidate_count=candidate_count,
+            min_duration_minutes=min_duration_minutes,
+            max_duration_minutes=max_duration_minutes,
+        )
+
+    async def select_candidates(
+        self,
+        *,
+        transcript: Transcript,
+        topics: TopicDiscoveryResponse,
+        candidate_count: int,
+        min_duration_minutes: float,
+        max_duration_minutes: float,
+    ) -> CurationResult:
         feedback: str | None = None
         last_response: CuratorResponse | None = None
         target_min_duration_seconds = min_duration_minutes * 60
@@ -200,6 +222,13 @@ class CuratorEngine:
         accepted_max_duration_seconds = (
             target_max_duration_seconds + ACCEPTED_DURATION_TOLERANCE_SECONDS
         )
+        final_min_duration_seconds = max(
+            0,
+            accepted_min_duration_seconds - FINAL_DURATION_SEGMENT_TOLERANCE_SECONDS,
+        )
+        final_max_duration_seconds = (
+            accepted_max_duration_seconds + FINAL_DURATION_SEGMENT_TOLERANCE_SECONDS
+        )
         for attempt in range(2):
             response = await self.client.parse(
                 model=self.model,
@@ -208,11 +237,14 @@ class CuratorEngine:
                     transcript=[
                         segment.model_dump(mode="json") for segment in transcript.segments
                     ],
+                    topics=[topic.model_dump(mode="json") for topic in topics.topics],
                     candidate_count=candidate_count,
                     target_min_duration_seconds=target_min_duration_seconds,
                     target_max_duration_seconds=target_max_duration_seconds,
                     accepted_min_duration_seconds=accepted_min_duration_seconds,
                     accepted_max_duration_seconds=accepted_max_duration_seconds,
+                    final_min_duration_seconds=final_min_duration_seconds,
+                    final_max_duration_seconds=final_max_duration_seconds,
                     validation_feedback=feedback,
                 ),
                 response_model=CuratorResponse,
@@ -242,7 +274,7 @@ class CuratorEngine:
                         Candidate(**candidate.model_dump()) for candidate in normalized_candidates
                     ],
                     model=self.model,
-                    prompt_version=curator.PROMPT_VERSION,
+                    prompt_version=(f"{topic_discovery.PROMPT_VERSION}+{curator.PROMPT_VERSION}"),
                 )
             feedback = "; ".join(errors)
             if attempt == 1:

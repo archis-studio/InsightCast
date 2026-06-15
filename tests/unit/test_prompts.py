@@ -13,11 +13,25 @@ def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None
 
     curator_user = curator.build_user_prompt(
         transcript=[{"start_seconds": 0, "end_seconds": 3, "text": "Hello"}],
+        topics=[
+            {
+                "topic_id": "T1",
+                "label": "Topic T1",
+                "summary": "Summary",
+                "central_claim": "Claim",
+                "importance_reason": "Important",
+                "start_seconds": 0,
+                "end_seconds": 600,
+                "importance_score": 0.9,
+            }
+        ],
         candidate_count=2,
         target_min_duration_seconds=480,
         target_max_duration_seconds=720,
         accepted_min_duration_seconds=420,
         accepted_max_duration_seconds=780,
+        final_min_duration_seconds=390,
+        final_max_duration_seconds=810,
         validation_feedback=None,
     )
     translation_user = translation.build_user_prompt(
@@ -31,15 +45,32 @@ def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None
 
     assert '"candidate_count": 2' in curator_user
     curator_payload = json.loads(curator_user)
-    assert curator.PROMPT_VERSION == "curator-v2"
+    assert curator.PROMPT_VERSION == "curator-v3"
+    assert curator_payload["topics"][0]["topic_id"] == "T1"
+    assert curator_payload["selection_priority"] == [
+        "importance",
+        "complete_argument",
+        "information_density",
+        "duration_fit",
+    ]
+    assert curator_payload["require_distinct_topics"] is True
+    assert curator_payload["required_arc"] == [
+        "necessary_background",
+        "central_claim_or_finding",
+        "key_evidence_or_reasoning",
+        "meaningful_conclusion",
+    ]
     assert curator_payload["target_min_duration_seconds"] == 480
     assert curator_payload["target_max_duration_seconds"] == 720
     assert curator_payload["accepted_min_duration_seconds"] == 420
     assert curator_payload["accepted_max_duration_seconds"] == 780
+    assert curator_payload["final_min_duration_seconds"] == 390
+    assert curator_payload["final_max_duration_seconds"] == 810
     assert curator_payload["times_are_approximate"] is True
-    assert curator_payload["prefer_complete_idea_arcs"] is True
     assert "aim for the target range" in curator_payload["duration_instruction"].lower()
-    assert "fallback" in curator_payload["duration_instruction"].lower()
+    assert "complete argument" in curator_payload["duration_instruction"].lower()
+    assert "segment alignment" in curator_payload["duration_instruction"].lower()
+    assert "low-value material" in curator_payload["duration_instruction"].lower()
     assert '"segment_id": "s1"' in translation_user
     assert '"source_title": "Source"' in metadata_user
 

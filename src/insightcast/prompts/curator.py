@@ -2,33 +2,54 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-PROMPT_VERSION = "curator-v2"
-SYSTEM_PROMPT = """You are a knowledge-video curator. Select continuous transcript ranges
-that preserve complete idea arcs and useful context. Do not create montages, optimize for
-controversy, or require non-overlapping candidates. Return only the requested structured output."""
+PROMPT_VERSION = "curator-v3"
+SYSTEM_PROMPT = """You are the candidate-boundary stage of a knowledge-video curator.
+Select the most important distinct knowledge units from the ranked topic pool. Choose continuous
+transcript ranges that preserve necessary background, the central claim or finding, key evidence
+or reasoning, and a meaningful conclusion. Remove greetings, sponsorships, repetition, and
+tangents when they are not needed for the argument. Return only the requested structured output."""
 
 
 def build_user_prompt(
     *,
     transcript: Sequence[Mapping[str, Any]],
+    topics: Sequence[Mapping[str, Any]],
     candidate_count: int,
     target_min_duration_seconds: float,
     target_max_duration_seconds: float,
     accepted_min_duration_seconds: float,
     accepted_max_duration_seconds: float,
+    final_min_duration_seconds: float,
+    final_max_duration_seconds: float,
     validation_feedback: str | None,
 ) -> str:
     payload = {
         "candidate_count": candidate_count,
+        "topics": list(topics),
+        "selection_priority": [
+            "importance",
+            "complete_argument",
+            "information_density",
+            "duration_fit",
+        ],
+        "require_distinct_topics": True,
+        "required_arc": [
+            "necessary_background",
+            "central_claim_or_finding",
+            "key_evidence_or_reasoning",
+            "meaningful_conclusion",
+        ],
         "target_min_duration_seconds": target_min_duration_seconds,
         "target_max_duration_seconds": target_max_duration_seconds,
         "accepted_min_duration_seconds": accepted_min_duration_seconds,
         "accepted_max_duration_seconds": accepted_max_duration_seconds,
+        "final_min_duration_seconds": final_min_duration_seconds,
+        "final_max_duration_seconds": final_max_duration_seconds,
         "times_are_approximate": True,
-        "prefer_complete_idea_arcs": True,
         "duration_instruction": (
-            "Treat times as approximate content selections. Aim for the target range, "
-            "preserve complete idea arcs, and use the accepted range only as a fallback."
+            "Aim for the target range. Use the accepted range only to preserve a complete "
+            "argument. Use the final range only for segment alignment. Do not include "
+            "low-value material to reach a duration."
         ),
         "transcript": list(transcript),
         "validation_feedback": validation_feedback,
