@@ -4,7 +4,6 @@ from pydantic import BaseModel
 from insightcast.core.exceptions import InsightCastError
 from insightcast.domain.enums import ErrorCode
 from insightcast.domain.models import Transcript, TranscriptSegment
-from insightcast.engines import curator_engine
 from insightcast.engines.curator_engine import (
     CuratorCandidateOutput,
     CuratorEngine,
@@ -461,36 +460,16 @@ async def test_curator_rejects_durations_outside_final_range(duration: float) ->
 
 
 @pytest.mark.asyncio
-async def test_curator_prefers_accepted_fallback_over_final_fallback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    observed_durations: list[float] = []
-    original_window_duration = curator_engine._window_duration
-
-    def recording_window_duration(
-        segments: list[TranscriptSegment],
-        start_index: int,
-        end_index: int,
-    ) -> float:
-        duration = original_window_duration(segments, start_index, end_index)
-        observed_durations.append(duration)
-        return duration
-
-    monkeypatch.setattr(
-        curator_engine,
-        "_window_duration",
-        recording_window_duration,
-    )
+async def test_curator_prefers_target_window_on_alternative_contraction_path() -> None:
     client = FakeStructuredClient(
-        [CuratorResponse(candidates=[output("A", 199, 1000)])]
+        [CuratorResponse(candidates=[output("A", 0, 375)])]
     )
 
     result = await CuratorEngine(client=client, model="gpt-curator").select_candidates(
         transcript=segmented_transcript(
-            (0, 200),
-            (200, 250),
-            (250, 600),
-            (600, 1000),
+            (0, 50),
+            (50, 350),
+            (350, 750),
         ),
         topics=valid_topics(),
         candidate_count=1,
@@ -499,10 +478,25 @@ async def test_curator_prefers_accepted_fallback_over_final_fallback(
     )
 
     candidate = result.candidates[0]
-    assert (candidate.start_seconds, candidate.end_seconds) == (250, 1000)
-    assert 800 in observed_durations
-    assert 750 in observed_durations
-    assert 400 in observed_durations
+    assert (candidate.start_seconds, candidate.end_seconds) == (50, 750)
+
+
+@pytest.mark.asyncio
+async def test_curator_prefers_accepted_window_over_final_window() -> None:
+    client = FakeStructuredClient(
+        [CuratorResponse(candidates=[output("A", 0, 400)])]
+    )
+
+    result = await CuratorEngine(client=client, model="gpt-curator").select_candidates(
+        transcript=segmented_transcript((0, 400), (400, 750)),
+        topics=valid_topics(),
+        candidate_count=1,
+        min_duration_minutes=8,
+        max_duration_minutes=12,
+    )
+
+    candidate = result.candidates[0]
+    assert (candidate.start_seconds, candidate.end_seconds) == (0, 750)
 
 
 @pytest.mark.asyncio

@@ -420,122 +420,47 @@ def _normalize_candidate(
     if not overlapping_indexes:
         return None
 
-    start_index = overlapping_indexes[0]
-    end_index = overlapping_indexes[-1]
-    accepted_fallback: tuple[int, int] | None = None
-    final_fallback: tuple[int, int] | None = None
-    visited_windows: set[tuple[int, int]] = set()
-
-    while True:
-        visited_windows.add((start_index, end_index))
-        duration = _window_duration(segments, start_index, end_index)
-        if target_min_duration_seconds <= duration <= target_max_duration_seconds:
-            return _with_segment_bounds(candidate, segments, start_index, end_index)
-        if accepted_min_duration_seconds <= duration <= accepted_max_duration_seconds:
-            accepted_fallback = (start_index, end_index)
-        elif (
-            accepted_fallback is None
-            and final_min_duration_seconds <= duration <= final_max_duration_seconds
-        ):
-            final_fallback = (start_index, end_index)
-
-        if duration < target_min_duration_seconds:
-            options: list[tuple[float, int, int]] = []
-            if start_index > 0:
-                expanded_window = (start_index - 1, end_index)
-                expanded_duration = _window_duration(
-                    segments,
-                    *expanded_window,
-                )
-                if (
-                    expanded_window not in visited_windows
-                    and expanded_duration <= final_max_duration_seconds
-                ):
-                    options.append(
-                        (
-                            abs(
-                                segments[start_index - 1].start_seconds
-                                - candidate.start_seconds
-                            ),
-                            start_index - 1,
-                            end_index,
-                        )
-                    )
-            if end_index + 1 < len(segments):
-                expanded_window = (start_index, end_index + 1)
-                expanded_duration = _window_duration(
-                    segments,
-                    *expanded_window,
-                )
-                if (
-                    expanded_window not in visited_windows
-                    and expanded_duration <= final_max_duration_seconds
-                ):
-                    options.append(
-                        (
-                            abs(
-                                segments[end_index + 1].end_seconds
-                                - candidate.end_seconds
-                            ),
-                            start_index,
-                            end_index + 1,
-                        )
-                    )
-            if not options:
+    options: list[tuple[int, float, float, int, int]] = []
+    for start_index, start_segment in enumerate(segments):
+        for end_index in range(start_index, len(segments)):
+            duration = _window_duration(segments, start_index, end_index)
+            if duration > final_max_duration_seconds:
                 break
-            _, start_index, end_index = min(options, key=lambda option: option[0])
-            continue
-
-        options = []
-        if start_index < end_index:
-            contracted_window = (start_index + 1, end_index)
+            if duration < final_min_duration_seconds:
+                continue
             retained_overlap = _window_overlap(
                 segments,
-                *contracted_window,
+                start_index,
+                end_index,
                 candidate.start_seconds,
                 candidate.end_seconds,
             )
-            if retained_overlap > 0 and contracted_window not in visited_windows:
-                options.append(
-                    (
-                        _segment_overlap(
-                            segments[start_index],
-                            candidate.start_seconds,
-                            candidate.end_seconds,
-                        ),
-                        1,
-                        start_index + 1,
-                        end_index,
-                    )
-                )
-            contracted_window = (start_index, end_index - 1)
-            retained_overlap = _window_overlap(
-                segments,
-                *contracted_window,
-                candidate.start_seconds,
-                candidate.end_seconds,
+            if retained_overlap <= 0:
+                continue
+            if target_min_duration_seconds <= duration <= target_max_duration_seconds:
+                duration_tier = 0
+            elif accepted_min_duration_seconds <= duration <= accepted_max_duration_seconds:
+                duration_tier = 1
+            else:
+                duration_tier = 2
+            boundary_distance = (
+                abs(start_segment.start_seconds - candidate.start_seconds)
+                + abs(segments[end_index].end_seconds - candidate.end_seconds)
             )
-            if retained_overlap > 0 and contracted_window not in visited_windows:
-                options.append(
-                    (
-                        _segment_overlap(
-                            segments[end_index],
-                            candidate.start_seconds,
-                            candidate.end_seconds,
-                        ),
-                        0,
-                        start_index,
-                        end_index - 1,
-                    )
+            options.append(
+                (
+                    duration_tier,
+                    -retained_overlap,
+                    boundary_distance,
+                    start_index,
+                    end_index,
                 )
-        if not options:
-            break
-        _, _, start_index, end_index = min(options, key=lambda option: (option[0], option[1]))
+            )
 
-    fallback = accepted_fallback or final_fallback
-    if fallback is None:
+    if not options:
         return None
-    return _with_segment_bounds(candidate, segments, *fallback)
+    _, _, _, start_index, end_index = min(options)
+    return _with_segment_bounds(candidate, segments, start_index, end_index)
 
 
 def _window_duration(
