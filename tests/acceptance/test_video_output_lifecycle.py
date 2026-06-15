@@ -11,7 +11,11 @@ from insightcast.domain.models import (
     TranscriptSegment,
 )
 from insightcast.engines.clip_engine import ClipArtifacts
-from insightcast.engines.curator_engine import CurationResult
+from insightcast.engines.curator_engine import (
+    CurationResult,
+    TopicDiscoveryOutput,
+    TopicDiscoveryResponse,
+)
 from insightcast.engines.publish_engine import GeneratedYouTubeMetadata
 from insightcast.engines.source_engine import SourceResult
 from insightcast.infrastructure.ytdlp_client import YouTubeMetadata
@@ -110,7 +114,34 @@ class FakeTranscriber:
 
 
 class FakeCurator:
-    async def curate(self, **_kwargs: object) -> CurationResult:
+    async def discover_topics(self, **_kwargs: object) -> TopicDiscoveryResponse:
+        return TopicDiscoveryResponse(
+            topics=[
+                TopicDiscoveryOutput(
+                    topic_id="T1",
+                    label="Acceptance topic",
+                    summary="Acceptance topic summary.",
+                    central_claim="Acceptance central claim.",
+                    importance_reason="Acceptance importance reason.",
+                    start_seconds=0,
+                    end_seconds=600,
+                    importance_score=0.95,
+                ),
+                TopicDiscoveryOutput(
+                    topic_id="T2",
+                    label="Alternate acceptance topic",
+                    summary="Alternate acceptance topic summary.",
+                    central_claim="Alternate acceptance central claim.",
+                    importance_reason="Alternate acceptance importance reason.",
+                    start_seconds=0,
+                    end_seconds=600,
+                    importance_score=0.90,
+                ),
+            ]
+        )
+
+    async def select_candidates(self, **kwargs: object) -> CurationResult:
+        assert isinstance(kwargs["topics"], TopicDiscoveryResponse)
         return CurationResult(
             candidates=[
                 Candidate(
@@ -123,7 +154,7 @@ class FakeCurator:
                 )
             ],
             model="gpt-curator",
-            prompt_version="curator-v1",
+            prompt_version="topic-discovery-v1+curator-v3",
         )
 
 
