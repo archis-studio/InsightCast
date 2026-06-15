@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from insightcast.core.exceptions import InsightCastError
 from insightcast.domain.enums import ErrorCode
 from insightcast.domain.models import Transcript, TranscriptSegment
+from insightcast.engines import curator_engine
 from insightcast.engines.curator_engine import (
     CuratorCandidateOutput,
     CuratorEngine,
@@ -342,6 +343,7 @@ async def test_curator_retries_once_with_validation_feedback() -> None:
     assert "actual duration 100" in retry_prompt
     assert "target range 480" in retry_prompt
     assert "accepted range 420" in retry_prompt
+    assert "final range 390" in retry_prompt
 
 
 @pytest.mark.asyncio
@@ -412,6 +414,95 @@ async def test_curator_normalizes_candidates_to_complete_segments(
     assert normalized.selection_reason == candidate.selection_reason
     assert normalized.summary == candidate.summary
     assert normalized.score == candidate.score
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duration", [390, 810])
+async def test_curator_accepts_exact_final_duration_boundaries(duration: float) -> None:
+    client = FakeStructuredClient(
+        [CuratorResponse(candidates=[output("A", 0, duration)])]
+    )
+
+    result = await CuratorEngine(client=client, model="gpt-curator").select_candidates(
+        transcript=segmented_transcript((0, duration)),
+        topics=valid_topics(),
+        candidate_count=1,
+        min_duration_minutes=8,
+        max_duration_minutes=12,
+    )
+
+    candidate = result.candidates[0]
+    assert (candidate.start_seconds, candidate.end_seconds) == (0, duration)
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duration", [389, 811])
+async def test_curator_rejects_durations_outside_final_range(duration: float) -> None:
+    invalid = CuratorResponse(candidates=[output("A", 0, duration)])
+    client = FakeStructuredClient([invalid, invalid])
+
+    with pytest.raises(InsightCastError) as exc_info:
+        await CuratorEngine(client=client, model="gpt-curator").select_candidates(
+            transcript=segmented_transcript((0, duration)),
+            topics=valid_topics(),
+            candidate_count=1,
+            min_duration_minutes=8,
+            max_duration_minutes=12,
+        )
+
+    error = exc_info.value
+    assert error.error_code == ErrorCode.INVALID_LLM_OUTPUT
+    assert len(client.calls) == 2
+    feedback = str(error.details["validation_feedback"])
+    assert "target range 480" in feedback
+    assert "accepted range 420" in feedback
+    assert "final range 390-810" in feedback.replace(".0", "")
+
+
+@pytest.mark.asyncio
+async def test_curator_prefers_accepted_fallback_over_final_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_durations: list[float] = []
+    original_window_duration = curator_engine._window_duration
+
+    def recording_window_duration(
+        segments: list[TranscriptSegment],
+        start_index: int,
+        end_index: int,
+    ) -> float:
+        duration = original_window_duration(segments, start_index, end_index)
+        observed_durations.append(duration)
+        return duration
+
+    monkeypatch.setattr(
+        curator_engine,
+        "_window_duration",
+        recording_window_duration,
+    )
+    client = FakeStructuredClient(
+        [CuratorResponse(candidates=[output("A", 199, 1000)])]
+    )
+
+    result = await CuratorEngine(client=client, model="gpt-curator").select_candidates(
+        transcript=segmented_transcript(
+            (0, 200),
+            (200, 250),
+            (250, 600),
+            (600, 1000),
+        ),
+        topics=valid_topics(),
+        candidate_count=1,
+        min_duration_minutes=8,
+        max_duration_minutes=12,
+    )
+
+    candidate = result.candidates[0]
+    assert (candidate.start_seconds, candidate.end_seconds) == (250, 1000)
+    assert 800 in observed_durations
+    assert 750 in observed_durations
+    assert 400 in observed_durations
 
 
 @pytest.mark.asyncio

@@ -256,6 +256,8 @@ class CuratorEngine:
                 target_max_duration_seconds=target_max_duration_seconds,
                 accepted_min_duration_seconds=accepted_min_duration_seconds,
                 accepted_max_duration_seconds=accepted_max_duration_seconds,
+                final_min_duration_seconds=final_min_duration_seconds,
+                final_max_duration_seconds=final_max_duration_seconds,
             )
             last_response = CuratorResponse(candidates=normalized_candidates)
             errors = self._validate_candidates(
@@ -266,6 +268,8 @@ class CuratorEngine:
                 target_max_duration_seconds=target_max_duration_seconds,
                 accepted_min_duration_seconds=accepted_min_duration_seconds,
                 accepted_max_duration_seconds=accepted_max_duration_seconds,
+                final_min_duration_seconds=final_min_duration_seconds,
+                final_max_duration_seconds=final_max_duration_seconds,
             )
             errors = normalization_errors + errors
             if not errors:
@@ -308,6 +312,8 @@ class CuratorEngine:
         target_max_duration_seconds: float,
         accepted_min_duration_seconds: float,
         accepted_max_duration_seconds: float,
+        final_min_duration_seconds: float,
+        final_max_duration_seconds: float,
     ) -> tuple[list[CuratorCandidateOutput], list[str]]:
         normalized: list[CuratorCandidateOutput] = []
         errors: list[str] = []
@@ -319,6 +325,8 @@ class CuratorEngine:
                 target_max_duration_seconds=target_max_duration_seconds,
                 accepted_min_duration_seconds=accepted_min_duration_seconds,
                 accepted_max_duration_seconds=accepted_max_duration_seconds,
+                final_min_duration_seconds=final_min_duration_seconds,
+                final_max_duration_seconds=final_max_duration_seconds,
             )
             if result is None:
                 duration = candidate.end_seconds - candidate.start_seconds
@@ -327,7 +335,8 @@ class CuratorEngine:
                     f"actual duration {duration} seconds; target range "
                     f"{target_min_duration_seconds}-{target_max_duration_seconds} seconds; "
                     f"accepted range {accepted_min_duration_seconds}-"
-                    f"{accepted_max_duration_seconds} seconds"
+                    f"{accepted_max_duration_seconds} seconds; final range "
+                    f"{final_min_duration_seconds}-{final_max_duration_seconds} seconds"
                 )
                 normalized.append(candidate)
             else:
@@ -344,6 +353,8 @@ class CuratorEngine:
         target_max_duration_seconds: float,
         accepted_min_duration_seconds: float,
         accepted_max_duration_seconds: float,
+        final_min_duration_seconds: float,
+        final_max_duration_seconds: float,
     ) -> list[str]:
         errors: list[str] = []
         if len(candidates) != candidate_count:
@@ -360,12 +371,14 @@ class CuratorEngine:
             if candidate.start_seconds < 0 or candidate.end_seconds <= candidate.start_seconds:
                 errors.append(f"candidate {candidate.candidate_id} has an invalid time range")
             duration = candidate.end_seconds - candidate.start_seconds
-            if not accepted_min_duration_seconds <= duration <= accepted_max_duration_seconds:
+            if not final_min_duration_seconds <= duration <= final_max_duration_seconds:
                 errors.append(
                     f"candidate {candidate.candidate_id} actual duration {duration} seconds; "
                     f"target range {target_min_duration_seconds}-"
                     f"{target_max_duration_seconds} seconds; accepted range "
-                    f"{accepted_min_duration_seconds}-{accepted_max_duration_seconds} seconds"
+                    f"{accepted_min_duration_seconds}-{accepted_max_duration_seconds} seconds; "
+                    f"final range {final_min_duration_seconds}-"
+                    f"{final_max_duration_seconds} seconds"
                 )
             if candidate.end_seconds > transcript_duration:
                 errors.append(
@@ -392,6 +405,8 @@ def _normalize_candidate(
     target_max_duration_seconds: float,
     accepted_min_duration_seconds: float,
     accepted_max_duration_seconds: float,
+    final_min_duration_seconds: float,
+    final_max_duration_seconds: float,
 ) -> CuratorCandidateOutput | None:
     if candidate.end_seconds <= candidate.start_seconds or not segments:
         return None
@@ -407,24 +422,35 @@ def _normalize_candidate(
 
     start_index = overlapping_indexes[0]
     end_index = overlapping_indexes[-1]
-    fallback: tuple[int, int] | None = None
+    accepted_fallback: tuple[int, int] | None = None
+    final_fallback: tuple[int, int] | None = None
+    visited_windows: set[tuple[int, int]] = set()
 
     while True:
+        visited_windows.add((start_index, end_index))
         duration = _window_duration(segments, start_index, end_index)
         if target_min_duration_seconds <= duration <= target_max_duration_seconds:
             return _with_segment_bounds(candidate, segments, start_index, end_index)
         if accepted_min_duration_seconds <= duration <= accepted_max_duration_seconds:
-            fallback = (start_index, end_index)
+            accepted_fallback = (start_index, end_index)
+        elif (
+            accepted_fallback is None
+            and final_min_duration_seconds <= duration <= final_max_duration_seconds
+        ):
+            final_fallback = (start_index, end_index)
 
         if duration < target_min_duration_seconds:
             options: list[tuple[float, int, int]] = []
             if start_index > 0:
+                expanded_window = (start_index - 1, end_index)
                 expanded_duration = _window_duration(
                     segments,
-                    start_index - 1,
-                    end_index,
+                    *expanded_window,
                 )
-                if expanded_duration <= accepted_max_duration_seconds:
+                if (
+                    expanded_window not in visited_windows
+                    and expanded_duration <= final_max_duration_seconds
+                ):
                     options.append(
                         (
                             abs(
@@ -436,12 +462,15 @@ def _normalize_candidate(
                         )
                     )
             if end_index + 1 < len(segments):
+                expanded_window = (start_index, end_index + 1)
                 expanded_duration = _window_duration(
                     segments,
-                    start_index,
-                    end_index + 1,
+                    *expanded_window,
                 )
-                if expanded_duration <= accepted_max_duration_seconds:
+                if (
+                    expanded_window not in visited_windows
+                    and expanded_duration <= final_max_duration_seconds
+                ):
                     options.append(
                         (
                             abs(
@@ -455,21 +484,18 @@ def _normalize_candidate(
             if not options:
                 break
             _, start_index, end_index = min(options, key=lambda option: option[0])
-            duration = _window_duration(segments, start_index, end_index)
-            if target_max_duration_seconds < duration <= accepted_max_duration_seconds:
-                return _with_segment_bounds(candidate, segments, start_index, end_index)
             continue
 
         options = []
         if start_index < end_index:
+            contracted_window = (start_index + 1, end_index)
             retained_overlap = _window_overlap(
                 segments,
-                start_index + 1,
-                end_index,
+                *contracted_window,
                 candidate.start_seconds,
                 candidate.end_seconds,
             )
-            if retained_overlap > 0:
+            if retained_overlap > 0 and contracted_window not in visited_windows:
                 options.append(
                     (
                         _segment_overlap(
@@ -482,14 +508,14 @@ def _normalize_candidate(
                         end_index,
                     )
                 )
+            contracted_window = (start_index, end_index - 1)
             retained_overlap = _window_overlap(
                 segments,
-                start_index,
-                end_index - 1,
+                *contracted_window,
                 candidate.start_seconds,
                 candidate.end_seconds,
             )
-            if retained_overlap > 0:
+            if retained_overlap > 0 and contracted_window not in visited_windows:
                 options.append(
                     (
                         _segment_overlap(
@@ -505,10 +531,8 @@ def _normalize_candidate(
         if not options:
             break
         _, _, start_index, end_index = min(options, key=lambda option: (option[0], option[1]))
-        duration = _window_duration(segments, start_index, end_index)
-        if accepted_min_duration_seconds <= duration < target_min_duration_seconds:
-            return _with_segment_bounds(candidate, segments, start_index, end_index)
 
+    fallback = accepted_fallback or final_fallback
     if fallback is None:
         return None
     return _with_segment_bounds(candidate, segments, *fallback)
