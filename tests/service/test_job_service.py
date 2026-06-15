@@ -16,7 +16,11 @@ from insightcast.domain.models import (
     TranscriptSegment,
 )
 from insightcast.engines.clip_engine import ClipArtifacts
-from insightcast.engines.curator_engine import CurationResult
+from insightcast.engines.curator_engine import (
+    CurationResult,
+    TopicDiscoveryOutput,
+    TopicDiscoveryResponse,
+)
 from insightcast.engines.publish_engine import GeneratedYouTubeMetadata
 from insightcast.engines.source_engine import SourceResult
 from insightcast.infrastructure.ytdlp_client import YouTubeMetadata
@@ -130,12 +134,47 @@ class FakeTranscriber:
         )
 
 
+def discovered_topic(
+    topic_id: str,
+    start: float,
+    end: float,
+    score: float,
+) -> TopicDiscoveryOutput:
+    return TopicDiscoveryOutput(
+        topic_id=topic_id,
+        label=f"Topic {topic_id}",
+        summary=f"Summary {topic_id}",
+        central_claim=f"Claim {topic_id}",
+        importance_reason=f"Reason {topic_id}",
+        start_seconds=start,
+        end_seconds=end,
+        importance_score=score,
+    )
+
+
 class FakeCurator:
     def __init__(self) -> None:
-        self.calls = 0
+        self.discovery_calls = 0
+        self.selection_calls = 0
 
-    async def curate(self, **_kwargs: object) -> CurationResult:
-        self.calls += 1
+    @property
+    def calls(self) -> int:
+        return self.discovery_calls + self.selection_calls
+
+    async def discover_topics(self, **_kwargs: object) -> TopicDiscoveryResponse:
+        self.discovery_calls += 1
+        return TopicDiscoveryResponse(
+            topics=[
+                discovered_topic("T1", 0, 600, 0.95),
+                discovered_topic("T2", 600, 1200, 0.90),
+                discovered_topic("T3", 0, 600, 0.85),
+                discovered_topic("T4", 600, 1200, 0.80),
+            ]
+        )
+
+    async def select_candidates(self, **kwargs: object) -> CurationResult:
+        self.selection_calls += 1
+        assert isinstance(kwargs["topics"], TopicDiscoveryResponse)
         return CurationResult(
             candidates=[
                 Candidate(
@@ -156,17 +195,20 @@ class FakeCurator:
                 ),
             ],
             model="gpt-curator",
-            prompt_version="curator-v1",
+            prompt_version="topic-discovery-v1+curator-v3",
         )
 
 
 class FailingCurator:
-    async def curate(self, **_kwargs: object) -> CurationResult:
+    async def discover_topics(self, **_kwargs: object) -> TopicDiscoveryResponse:
         raise InsightCastError(
             ErrorCode.INSUFFICIENT_CANDIDATES,
-            "Not enough candidates.",
-            stage="curating",
+            "Not enough topics.",
+            stage="topic_discovery",
         )
+
+    async def select_candidates(self, **_kwargs: object) -> CurationResult:
+        raise AssertionError("selection must not run after discovery fails")
 
 
 class FakeClip:
@@ -329,7 +371,8 @@ async def test_analysis_pipeline_stops_at_waiting_selection(tmp_path: Path) -> N
     stored = service.get_analysis_job(job.job_id)
     assert stored.status == JobStatus.WAITING_SELECTION
     assert [item.candidate_id for item in stored.candidates] == ["A", "B"]
-    assert curator.calls == 1
+    assert curator.discovery_calls == 1
+    assert curator.selection_calls == 1
 
 
 @pytest.mark.asyncio
@@ -363,7 +406,8 @@ async def test_forced_analysis_reuses_cached_transcript_for_same_source_and_mode
     assert first_artifacts is not None
     assert transcriber.calls == [first_artifacts.source_audio]
     assert service._transcripts[first.job_id] == service._transcripts[second.job_id]
-    assert curator.calls == 2
+    assert curator.discovery_calls == 2
+    assert curator.selection_calls == 2
 
 
 @pytest.mark.asyncio
@@ -543,7 +587,7 @@ async def test_render_skips_completed_candidate_and_force_creates_new_batch(
     await service.process(await service.queue.get())
 
     assert first.status == JobStatus.COMPLETED
-    assert first.output_dir.name == "20260606-143005-id0002"
+    assert first.output_dir.name == "20260606-143006-id0002"
     assert skipped.status == JobStatus.COMPLETED
     assert forced.render_id != first.render_id
     assert clip.calls == ["A", "A"]
@@ -684,7 +728,8 @@ async def test_direct_render_is_unique_and_does_not_call_curator(tmp_path: Path)
     assert first.job_id != second.job_id
     assert first.status == JobStatus.COMPLETED
     assert second.status == JobStatus.COMPLETED
-    assert curator.calls == 0
+    assert curator.discovery_calls == 0
+    assert curator.selection_calls == 0
     assert isinstance(first.artifacts, RenderArtifacts)
     assert all(item.kind == WorkKind.DIRECT_RENDER for item in service.processed_work[-2:])
 
@@ -822,10 +867,12 @@ async def test_pipeline_log_records_analysis_and_render_stage_timings(
     for stage in (
         "source_ingestion",
         "transcription",
-        "candidate_curation",
+        "topic_discovery",
+        "candidate_boundary_selection",
         "candidate_clip_render",
         "metadata_generation",
     ):
         assert f"stage_started stage={stage}" in log
         assert f"stage_completed stage={stage}" in log
+    assert "stage_started stage=candidate_curation" not in log
     assert "elapsed_seconds=" in log
