@@ -384,12 +384,22 @@ class JobService:
                 log_path=Path("logs") / f"{job.job_id}.log",
             )
 
-            self._set_status(job, JobStatus.CURATING, "Selecting candidate idea arcs.")
+            self._set_status(job, JobStatus.CURATING, "Ranking important video topics.")
+            topics = await self._run_stage(
+                job,
+                "topic_discovery",
+                lambda: self.curator_engine.discover_topics(
+                    transcript=transcript,
+                    candidate_count=candidate_count,
+                ),
+            )
+            self._set_status(job, JobStatus.CURATING, "Selecting complete candidate ranges.")
             result = await self._run_stage(
                 job,
-                "candidate_curation",
-                lambda: self.curator_engine.curate(
+                "candidate_boundary_selection",
+                lambda: self.curator_engine.select_candidates(
                     transcript=transcript,
+                    topics=topics,
                     candidate_count=candidate_count,
                     min_duration_minutes=minimum,
                     max_duration_minutes=maximum,
