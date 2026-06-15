@@ -1,3 +1,4 @@
+import math
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -144,16 +145,33 @@ class CuratorEngine:
                     errors.append(
                         f"topic {topic.topic_id} {field_name} must not be empty"
                     )
-            if topic.start_seconds < 0 or topic.end_seconds <= topic.start_seconds:
-                errors.append(f"topic {topic.topic_id} has an invalid time range")
-            if topic.end_seconds > transcript_duration:
-                errors.append(f"topic {topic.topic_id} exceeds transcript duration")
-            if not 0 <= topic.importance_score <= 1:
+            start_is_finite = math.isfinite(topic.start_seconds)
+            end_is_finite = math.isfinite(topic.end_seconds)
+            score_is_finite = math.isfinite(topic.importance_score)
+            if not start_is_finite:
+                errors.append(f"topic {topic.topic_id} start_seconds must be finite")
+            if not end_is_finite:
+                errors.append(f"topic {topic.topic_id} end_seconds must be finite")
+            if start_is_finite and end_is_finite:
+                if (
+                    topic.start_seconds < 0
+                    or topic.end_seconds <= topic.start_seconds
+                ):
+                    errors.append(f"topic {topic.topic_id} has an invalid time range")
+                if topic.end_seconds > transcript_duration:
+                    errors.append(f"topic {topic.topic_id} exceeds transcript duration")
+            if not score_is_finite:
+                errors.append(
+                    f"topic {topic.topic_id} importance_score must be finite"
+                )
+            elif not 0 <= topic.importance_score <= 1:
                 errors.append(
                     f"topic {topic.topic_id} importance score must be between 0 and 1"
                 )
             if (
                 index > 0
+                and score_is_finite
+                and math.isfinite(topics[index - 1].importance_score)
                 and topic.importance_score > topics[index - 1].importance_score
             ):
                 errors.append(

@@ -144,6 +144,112 @@ async def test_discover_topics_retries_with_specific_validation_feedback() -> No
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("start_seconds", float("nan")),
+        ("start_seconds", float("inf")),
+        ("end_seconds", float("nan")),
+        ("end_seconds", float("inf")),
+        ("importance_score", float("nan")),
+        ("importance_score", float("inf")),
+    ],
+)
+async def test_discover_topics_retries_when_numeric_fields_are_not_finite(
+    field_name: str,
+    invalid_value: float,
+) -> None:
+    invalid_topics = [
+        topic("T1", 0, 300, 0.9),
+        topic("T2", 300, 600, 0.8),
+        topic("T3", 600, 900, 0.7),
+        topic("T4", 900, 1200, 0.6),
+    ]
+    invalid_topics[0] = invalid_topics[0].model_copy(
+        update={field_name: invalid_value}
+    )
+    valid_topics = [
+        topic("T1", 0, 300, 0.9),
+        topic("T2", 300, 600, 0.8),
+        topic("T3", 600, 900, 0.7),
+        topic("T4", 900, 1200, 0.6),
+    ]
+    client = FakeStructuredClient(
+        [
+            TopicDiscoveryResponse(topics=invalid_topics),
+            TopicDiscoveryResponse(topics=valid_topics),
+        ]
+    )
+
+    result = await CuratorEngine(client=client, model="gpt-curator").discover_topics(
+        transcript=transcript(),
+        candidate_count=2,
+    )
+
+    assert len(client.calls) == 2
+    assert len(result.topics) == 4
+    assert f"{field_name} must be finite" in str(client.calls[1]["user_prompt"])
+
+
+@pytest.mark.asyncio
+async def test_discover_topics_raises_insufficient_candidates_after_retry() -> None:
+    undersized = TopicDiscoveryResponse(
+        topics=[
+            topic("T1", 0, 300, 0.9),
+            topic("T2", 300, 600, 0.8),
+        ]
+    )
+    client = FakeStructuredClient([undersized, undersized])
+
+    with pytest.raises(InsightCastError) as exc_info:
+        await CuratorEngine(client=client, model="gpt-curator").discover_topics(
+            transcript=transcript(),
+            candidate_count=2,
+        )
+
+    error = exc_info.value
+    assert error.error_code == ErrorCode.INSUFFICIENT_CANDIDATES
+    assert error.stage == "topic_discovery"
+    assert error.message == "The curator could not discover enough valid topics."
+    assert error.details == {
+        "minimum_topics": 3,
+        "requested_topic_pool": 4,
+        "received_topics": 2,
+        "validation_feedback": "topic pool must contain at least 3 topics, received 2",
+    }
+
+
+@pytest.mark.asyncio
+async def test_discover_topics_raises_invalid_llm_output_after_retry() -> None:
+    invalid = TopicDiscoveryResponse(
+        topics=[
+            topic("T1", 0, 300, 0.9).model_copy(update={"label": " "}),
+            topic("T2", 300, 600, 0.8),
+            topic("T3", 600, 900, 0.7),
+            topic("T4", 900, 1200, 0.6),
+        ]
+    )
+    client = FakeStructuredClient([invalid, invalid])
+
+    with pytest.raises(InsightCastError) as exc_info:
+        await CuratorEngine(client=client, model="gpt-curator").discover_topics(
+            transcript=transcript(),
+            candidate_count=2,
+        )
+
+    error = exc_info.value
+    assert error.error_code == ErrorCode.INVALID_LLM_OUTPUT
+    assert error.stage == "topic_discovery"
+    assert (
+        error.message
+        == "The curator returned invalid topic discovery data after one retry."
+    )
+    assert error.details == {
+        "validation_feedback": "topic T1 label must not be empty"
+    }
+
+
+@pytest.mark.asyncio
 async def test_curator_accepts_exact_ordered_candidates_and_overlap() -> None:
     client = FakeStructuredClient(
         [
