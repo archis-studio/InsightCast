@@ -100,3 +100,32 @@ def test_topic_discovery_prompt_ranks_distinct_important_topics() -> None:
     assert "importance" in system_prompt
     assert "distinct" in system_prompt
     assert "controvers" in system_prompt
+
+
+def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
+    prompt = metadata.build_user_prompt(
+        source_title="Foreign source",
+        summary="A supported central finding",
+        transcript_excerpt="Evidence and conclusion",
+    )
+    payload = json.loads(prompt)
+    system = metadata.SYSTEM_PROMPT.lower()
+
+    assert metadata.PROMPT_VERSION == "metadata-v2"
+    assert "traditional chinese" in system
+    assert "knowledge-news" in system
+    assert "translated highlight" in system
+    assert "original video" in system
+    assert "unsupported" in system
+    assert payload["title_strategy"] == [
+        "what_happened_was_found_or_is_argued",
+        "central_conclusion_or_consequence",
+        "why_it_deserves_attention",
+    ]
+    assert payload["description_strategy"] == [
+        "why_the_topic_matters",
+        "central_claim_and_supporting_reasoning",
+        "necessary_context",
+        "traditional_chinese_translated_highlight_disclosure",
+        "consult_original_video_for_full_discussion",
+    ]
