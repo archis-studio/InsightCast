@@ -1,4 +1,5 @@
 import pytest
+from pydantic import BaseModel
 
 from insightcast.core.exceptions import InsightCastError
 from insightcast.domain.enums import ErrorCode
@@ -7,15 +8,17 @@ from insightcast.engines.curator_engine import (
     CuratorCandidateOutput,
     CuratorEngine,
     CuratorResponse,
+    TopicDiscoveryOutput,
+    TopicDiscoveryResponse,
 )
 
 
 class FakeStructuredClient:
-    def __init__(self, responses: list[CuratorResponse]) -> None:
+    def __init__(self, responses: list[BaseModel]) -> None:
         self.responses = responses
         self.calls: list[dict[str, object]] = []
 
-    async def parse(self, **kwargs: object) -> CuratorResponse:
+    async def parse(self, **kwargs: object) -> BaseModel:
         self.calls.append(kwargs)
         return self.responses.pop(0)
 
@@ -61,6 +64,83 @@ def output(
         summary="Useful summary",
         score=0.9,
     )
+
+
+def topic(
+    topic_id: str,
+    start: float,
+    end: float,
+    score: float,
+) -> TopicDiscoveryOutput:
+    return TopicDiscoveryOutput(
+        topic_id=topic_id,
+        label=f"Topic {topic_id}",
+        summary=f"Summary for {topic_id}",
+        central_claim=f"Central claim for {topic_id}",
+        importance_reason=f"Importance reason for {topic_id}",
+        start_seconds=start,
+        end_seconds=end,
+        importance_score=score,
+    )
+
+
+@pytest.mark.asyncio
+async def test_discover_topics_requests_larger_ranked_pool() -> None:
+    client = FakeStructuredClient(
+        [
+            TopicDiscoveryResponse(
+                topics=[
+                    topic("T1", 0, 300, 0.9),
+                    topic("T2", 300, 600, 0.8),
+                    topic("T3", 600, 900, 0.7),
+                    topic("T4", 900, 1200, 0.6),
+                ]
+            )
+        ]
+    )
+
+    result = await CuratorEngine(client=client, model="gpt-curator").discover_topics(
+        transcript=transcript(),
+        candidate_count=2,
+    )
+
+    assert [item.topic_id for item in result.topics] == ["T1", "T2", "T3", "T4"]
+    assert '"topic_pool_size": 4' in str(client.calls[0]["user_prompt"])
+    assert client.calls[0]["response_model"] is TopicDiscoveryResponse
+
+
+@pytest.mark.asyncio
+async def test_discover_topics_retries_with_specific_validation_feedback() -> None:
+    client = FakeStructuredClient(
+        [
+            TopicDiscoveryResponse(
+                topics=[
+                    topic("T2", 0, 300, 0.2),
+                    topic("T1", 300, 600, 0.8),
+                ]
+            ),
+            TopicDiscoveryResponse(
+                topics=[
+                    topic("T1", 0, 300, 0.9),
+                    topic("T2", 300, 600, 0.8),
+                    topic("T3", 600, 900, 0.7),
+                    topic("T4", 900, 1200, 0.6),
+                ]
+            ),
+        ]
+    )
+
+    result = await CuratorEngine(client=client, model="gpt-curator").discover_topics(
+        transcript=transcript(),
+        candidate_count=2,
+    )
+
+    assert len(client.calls) == 2
+    assert len(result.topics) == 4
+    retry_prompt = str(client.calls[1]["user_prompt"])
+    assert "topic pool must contain at least 3 topics" in retry_prompt
+    assert "topic 1 ID must be T1" in retry_prompt
+    assert "descending importance order" in retry_prompt
 
 
 @pytest.mark.asyncio

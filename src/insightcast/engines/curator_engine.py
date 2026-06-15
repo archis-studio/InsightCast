@@ -5,9 +5,10 @@ from pydantic import BaseModel, ConfigDict
 from insightcast.core.exceptions import InsightCastError
 from insightcast.domain.enums import ErrorCode
 from insightcast.domain.models import Candidate, Transcript, TranscriptSegment
-from insightcast.prompts import curator
+from insightcast.prompts import curator, topic_discovery
 
 ACCEPTED_DURATION_TOLERANCE_SECONDS = 60
+TOPIC_POOL_MULTIPLIER = 2
 
 
 class CuratorModel(BaseModel):
@@ -28,6 +29,21 @@ class CuratorResponse(CuratorModel):
     candidates: list[CuratorCandidateOutput]
 
 
+class TopicDiscoveryOutput(CuratorModel):
+    topic_id: str
+    label: str
+    summary: str
+    central_claim: str
+    importance_reason: str
+    start_seconds: float
+    end_seconds: float
+    importance_score: float
+
+
+class TopicDiscoveryResponse(CuratorModel):
+    topics: list[TopicDiscoveryOutput]
+
+
 class CurationResult(CuratorModel):
     candidates: list[Candidate]
     model: str
@@ -38,6 +54,114 @@ class CuratorEngine:
     def __init__(self, *, client: Any, model: str) -> None:
         self.client = client
         self.model = model
+
+    async def discover_topics(
+        self,
+        *,
+        transcript: Transcript,
+        candidate_count: int,
+    ) -> TopicDiscoveryResponse:
+        topic_pool_size = candidate_count * TOPIC_POOL_MULTIPLIER
+        minimum_topic_count = candidate_count + 1
+        feedback: str | None = None
+        last_response: TopicDiscoveryResponse | None = None
+
+        for attempt in range(2):
+            response = await self.client.parse(
+                model=self.model,
+                system_prompt=topic_discovery.SYSTEM_PROMPT,
+                user_prompt=topic_discovery.build_user_prompt(
+                    transcript=[
+                        segment.model_dump(mode="json") for segment in transcript.segments
+                    ],
+                    topic_pool_size=topic_pool_size,
+                    validation_feedback=feedback,
+                ),
+                response_model=TopicDiscoveryResponse,
+            )
+            last_response = response
+            errors = self._validate_topics(
+                response.topics,
+                transcript_duration=transcript.duration_seconds,
+                minimum_topic_count=minimum_topic_count,
+            )
+            if not errors:
+                return response
+            feedback = "; ".join(errors)
+            if attempt == 1:
+                break
+
+        assert last_response is not None
+        details = {"validation_feedback": feedback}
+        if len(last_response.topics) < minimum_topic_count:
+            details.update(
+                {
+                    "minimum_topics": minimum_topic_count,
+                    "requested_topic_pool": topic_pool_size,
+                    "received_topics": len(last_response.topics),
+                }
+            )
+            raise InsightCastError(
+                ErrorCode.INSUFFICIENT_CANDIDATES,
+                "The curator could not discover enough valid topics.",
+                details=details,
+                stage="topic_discovery",
+            )
+        raise InsightCastError(
+            ErrorCode.INVALID_LLM_OUTPUT,
+            "The curator returned invalid topic discovery data after one retry.",
+            details=details,
+            stage="topic_discovery",
+        )
+
+    @staticmethod
+    def _validate_topics(
+        topics: list[TopicDiscoveryOutput],
+        *,
+        transcript_duration: float,
+        minimum_topic_count: int,
+    ) -> list[str]:
+        errors: list[str] = []
+        if len(topics) < minimum_topic_count:
+            errors.append(
+                f"topic pool must contain at least {minimum_topic_count} topics, "
+                f"received {len(topics)}"
+            )
+        for index, topic in enumerate(topics):
+            expected_id = f"T{index + 1}"
+            if topic.topic_id != expected_id:
+                errors.append(
+                    f"topic {index + 1} ID must be {expected_id}, received {topic.topic_id}"
+                )
+            text_fields = {
+                "label": topic.label,
+                "summary": topic.summary,
+                "central_claim": topic.central_claim,
+                "importance_reason": topic.importance_reason,
+            }
+            for field_name, value in text_fields.items():
+                if not value.strip():
+                    errors.append(
+                        f"topic {topic.topic_id} {field_name} must not be empty"
+                    )
+            if topic.start_seconds < 0 or topic.end_seconds <= topic.start_seconds:
+                errors.append(f"topic {topic.topic_id} has an invalid time range")
+            if topic.end_seconds > transcript_duration:
+                errors.append(f"topic {topic.topic_id} exceeds transcript duration")
+            if not 0 <= topic.importance_score <= 1:
+                errors.append(
+                    f"topic {topic.topic_id} importance score must be between 0 and 1"
+                )
+            if (
+                index > 0
+                and topic.importance_score > topics[index - 1].importance_score
+            ):
+                errors.append(
+                    "topics must be in descending importance order; "
+                    f"topic {topic.topic_id} score {topic.importance_score} exceeds "
+                    f"the prior score {topics[index - 1].importance_score}"
+                )
+        return errors
 
     async def curate(
         self,
