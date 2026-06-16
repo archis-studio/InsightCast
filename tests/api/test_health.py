@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from insightcast.api.app import _build_runtime, create_app
+from insightcast.api.app import _build_runtime, _server_log_config, create_app
 from insightcast.core.config import Settings
 
 
@@ -61,3 +61,14 @@ def test_runtime_uses_ytdlp_from_current_python_environment(tmp_path: Path) -> N
     assert Path(service.source_engine.ytdlp.executable) == Path(sys.executable).with_name(
         "yt-dlp"
     )
+
+
+def test_server_log_config_routes_only_task_logger_to_default_console() -> None:
+    config = _server_log_config()
+
+    assert config["loggers"]["insightcast.task"] == {
+        "handlers": ["default"],
+        "level": "INFO",
+        "propagate": False,
+    }
+    assert config["loggers"]["uvicorn.access"]["handlers"] == ["access"]

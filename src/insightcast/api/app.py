@@ -2,6 +2,7 @@ import asyncio
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from openai import OpenAI
+from uvicorn.config import LOGGING_CONFIG
 
 from insightcast.api.routes import analysis_jobs, direct_render_jobs, health, videos
 from insightcast.core.config import Settings, get_settings
@@ -32,6 +34,16 @@ from insightcast.services.job_service import JobService
 from insightcast.services.queue_worker import QueueWorker
 from insightcast.storage.file_job_writer import FileJobWriter
 from insightcast.storage.video_store import VideoStore
+
+
+def _server_log_config() -> dict[str, Any]:
+    config = deepcopy(LOGGING_CONFIG)
+    config["loggers"]["insightcast.task"] = {
+        "handlers": ["default"],
+        "level": "INFO",
+        "propagate": False,
+    }
+    return config
 
 
 def _build_runtime(settings: Settings) -> tuple[JobService, FfmpegClient]:
@@ -185,4 +197,5 @@ def run() -> None:
         create_app(settings=settings),
         host=settings.api_host,
         port=settings.api_port,
+        log_config=_server_log_config(),
     )
