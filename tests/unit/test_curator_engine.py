@@ -126,6 +126,32 @@ async def test_discover_topics_requests_larger_ranked_pool() -> None:
 
 
 @pytest.mark.asyncio
+async def test_discover_topics_sorts_valid_topics_by_importance_score() -> None:
+    client = FakeStructuredClient(
+        [
+            TopicDiscoveryResponse(
+                topics=[
+                    topic("T1", 0, 300, 0.93),
+                    topic("T2", 300, 600, 0.91),
+                    topic("T3", 600, 900, 0.96),
+                    topic("T4", 900, 1200, 0.80),
+                ]
+            )
+        ]
+    )
+
+    result = await CuratorEngine(client=client, model="gpt-curator").discover_topics(
+        transcript=transcript(),
+        candidate_count=2,
+    )
+
+    assert len(client.calls) == 1
+    assert [item.topic_id for item in result.topics] == ["T1", "T2", "T3", "T4"]
+    assert [item.importance_score for item in result.topics] == [0.96, 0.93, 0.91, 0.80]
+    assert result.topics[0].label == "Topic T3"
+
+
+@pytest.mark.asyncio
 async def test_discover_topics_retries_with_specific_validation_feedback() -> None:
     client = FakeStructuredClient(
         [

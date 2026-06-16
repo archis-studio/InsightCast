@@ -81,6 +81,12 @@ class CuratorEngine:
                 ),
                 response_model=TopicDiscoveryResponse,
             )
+            response = TopicDiscoveryResponse(
+                topics=self._normalize_topics(
+                    response.topics,
+                    minimum_topic_count=minimum_topic_count,
+                )
+            )
             last_response = response
             errors = self._validate_topics(
                 response.topics,
@@ -115,6 +121,26 @@ class CuratorEngine:
             details=details,
             stage="topic_discovery",
         )
+
+    @staticmethod
+    def _normalize_topics(
+        topics: list[TopicDiscoveryOutput],
+        *,
+        minimum_topic_count: int,
+    ) -> list[TopicDiscoveryOutput]:
+        if len(topics) < minimum_topic_count:
+            return topics
+        if any(not math.isfinite(topic.importance_score) for topic in topics):
+            return topics
+
+        sorted_topics = sorted(
+            enumerate(topics),
+            key=lambda item: (-item[1].importance_score, item[0]),
+        )
+        return [
+            topic.model_copy(update={"topic_id": f"T{index + 1}"})
+            for index, (_, topic) in enumerate(sorted_topics)
+        ]
 
     @staticmethod
     def _validate_topics(
