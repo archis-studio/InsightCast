@@ -757,6 +757,43 @@ async def test_direct_render_uses_video_level_custom_directory(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_analysis_emits_concise_task_progress_events(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service, _curator, _clip = make_service(tmp_path)
+
+    with caplog.at_level(logging.INFO, logger="insightcast.task"):
+        job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+        await service.process(await service.queue.get())
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert (
+        f"task job_id={job.job_id} type=ANALYSIS status=QUEUED "
+        "message='Analysis job is queued.'"
+    ) in messages
+    assert (
+        f"task job_id={job.job_id} type=ANALYSIS status=TRANSCRIBING "
+        "message='Transcribing English audio.'"
+    ) in messages
+    assert (
+        f"task job_id={job.job_id} type=ANALYSIS "
+        "stage=topic_discovery event=started"
+    ) in messages
+    assert any(
+        message.startswith(
+            f"task job_id={job.job_id} type=ANALYSIS "
+            "stage=topic_discovery event=completed elapsed_seconds="
+        )
+        for message in messages
+    )
+    assert (
+        f"task job_id={job.job_id} type=ANALYSIS status=WAITING_SELECTION "
+        "message='2 candidates are ready for selection.'"
+    ) in messages
+
+
+@pytest.mark.asyncio
 async def test_failed_direct_render_retains_failed_manifest(tmp_path: Path) -> None:
     service, _, clip = make_service(tmp_path)
     clip.fail_candidates = {"custom"}

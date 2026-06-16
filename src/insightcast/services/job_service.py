@@ -9,7 +9,13 @@ from typing import Any, TypeVar
 from uuid import uuid4
 
 from insightcast.core.exceptions import InsightCastError
-from insightcast.core.logging import get_job_log_path, get_job_logger, log_task_failure
+from insightcast.core.logging import (
+    get_job_log_path,
+    get_job_logger,
+    log_task_failure,
+    log_task_stage,
+    log_task_status,
+)
 from insightcast.domain.enums import ErrorCode, JobStatus, JobType
 from insightcast.domain.models import (
     AnalysisJob,
@@ -142,6 +148,7 @@ class JobService:
             max_duration_minutes,
         )
         get_job_logger(job.job_id, job.output_dir).info("%s: %s", job.status, job.message)
+        log_task_status(job)
         self.writer.write_job(job)
         await self.queue.put(WorkItem(kind=WorkKind.ANALYSIS, job_id=job_id))
         return job
@@ -302,6 +309,7 @@ class JobService:
         )
         self.direct_jobs[job_id] = job
         get_job_logger(job.job_id, job.output_dir).info("%s: %s", job.status, job.message)
+        log_task_status(job)
         self.writer.write_job(job)
         await self.queue.put(WorkItem(kind=WorkKind.DIRECT_RENDER, job_id=job_id))
         return job
@@ -435,6 +443,7 @@ class JobService:
                 job.status,
                 job.message,
             )
+            log_task_status(job)
             self.writer.write_job(job)
         except InsightCastError as exc:
             get_job_logger(job.job_id, job.output_dir).exception(
@@ -777,6 +786,7 @@ class JobService:
     def _touch(self, job: AnalysisJob | DirectRenderJob) -> None:
         job.updated_at = self.clock()
         get_job_logger(job.job_id, job.output_dir).info("%s: %s", job.status, job.message)
+        log_task_status(job)
         self.writer.write_job(job)
 
     @staticmethod
@@ -912,19 +922,34 @@ class JobService:
         logger = get_job_logger(job.job_id, job.output_dir)
         started_at = perf_counter()
         logger.info("stage_started stage=%s", stage)
+        log_task_stage(job, stage, "started")
         try:
             result = await operation()
         except Exception:
+            elapsed_seconds = perf_counter() - started_at
             logger.error(
                 "stage_failed stage=%s elapsed_seconds=%.3f",
                 stage,
-                perf_counter() - started_at,
+                elapsed_seconds,
+            )
+            log_task_stage(
+                job,
+                stage,
+                "failed",
+                elapsed_seconds=elapsed_seconds,
             )
             raise
+        elapsed_seconds = perf_counter() - started_at
         logger.info(
             "stage_completed stage=%s elapsed_seconds=%.3f",
             stage,
-            perf_counter() - started_at,
+            elapsed_seconds,
+        )
+        log_task_stage(
+            job,
+            stage,
+            "completed",
+            elapsed_seconds=elapsed_seconds,
         )
         return result
 
