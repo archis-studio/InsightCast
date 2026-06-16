@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -801,6 +802,60 @@ async def test_analysis_failure_writes_traceback_to_pipeline_log(tmp_path: Path)
     log = get_job_log_path(job.job_id, job.output_dir).read_text(encoding="utf-8")
     assert "unexpected source failure" in log
     assert "Traceback" in log
+
+
+@pytest.mark.asyncio
+async def test_failed_analysis_emits_structured_task_failure(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service = JobService(
+        output_root=tmp_path / "outputs",
+        work_root=tmp_path / ".work",
+        source_engine=FakeSource(),
+        transcription_client=FakeTranscriber(),
+        curator_engine=FailingCurator(),
+        clip_engine=FakeClip(),
+        publish_engine=FakePublish(),
+        writer=FileJobWriter(),
+        clock=Clock(),
+        id_factory=IdFactory(),
+    )
+
+    with caplog.at_level(logging.ERROR, logger="insightcast.task"):
+        job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+        await service.process(await service.queue.get())
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert (
+        f"task job_id={job.job_id} type=ANALYSIS event=failed "
+        "error_code=INSUFFICIENT_CANDIDATES stage=topic_discovery"
+    ) in messages
+    assert all(record.exc_info is None for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_failed_candidate_render_emits_structured_task_failure(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service, _curator, clip = make_service(tmp_path)
+    job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+    await service.process(await service.queue.get())
+    clip.fail_candidates.add("A")
+    await service.create_render(
+        job.job_id,
+        CandidateSelectionRequest(candidate_ids="A"),
+    )
+
+    with caplog.at_level(logging.ERROR, logger="insightcast.task"):
+        await service.process(await service.queue.get())
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert (
+        f"task job_id={job.job_id} type=ANALYSIS event=failed "
+        "error_code=VIDEO_RENDER_FAILED stage=rendering"
+    ) in messages
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,7 @@ from typing import Any, TypeVar
 from uuid import uuid4
 
 from insightcast.core.exceptions import InsightCastError
-from insightcast.core.logging import get_job_log_path, get_job_logger
+from insightcast.core.logging import get_job_log_path, get_job_logger, log_task_failure
 from insightcast.domain.enums import ErrorCode, JobStatus, JobType
 from insightcast.domain.models import (
     AnalysisJob,
@@ -568,6 +568,7 @@ class JobService:
                     candidate_id,
                 )
                 error = self._as_job_error(exc, "rendering")
+                log_task_failure(job, error)
                 self.video_store.write_render(
                     video_id=job.video_id,
                     render_id=batch.render_id,
@@ -963,6 +964,7 @@ class JobService:
         job.status = JobStatus.FAILED
         job.message = error.message
         job.error = self._as_job_error(error, error.stage)
+        log_task_failure(job, job.error)
         self._touch(job)
 
     def _write_failed_analysis_manifest(self, job: AnalysisJob) -> None:
