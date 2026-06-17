@@ -436,6 +436,53 @@ def test_build_topic_windows_merges_overlaps_and_preserves_order() -> None:
     assert len(ids) == len(set(ids))
 
 
+def test_build_topic_windows_skips_invalid_topic_ranges() -> None:
+    source = segmented_transcript(
+        (0, 100),
+        (100, 200),
+        (200, 300),
+        (300, 400),
+        (400, 500),
+        (500, 600),
+    )
+
+    windowed = curator_engine._build_topic_windows(
+        segments=source.segments,
+        topics=[
+            topic("T1", float("nan"), 100, 0.9),
+            topic("T2", 400, 300, 0.8),
+            topic("T3", 200, 300, 0.7),
+        ],
+        target_min_duration_seconds=480,
+        final_max_duration_seconds=810,
+    )
+
+    assert [segment.segment_id for segment in windowed] == [
+        "s1",
+        "s2",
+        "s3",
+        "s4",
+        "s5",
+        "s6",
+    ]
+
+
+def test_build_topic_windows_returns_empty_for_no_valid_ranges() -> None:
+    source = segmented_transcript((0, 100), (100, 200))
+
+    windowed = curator_engine._build_topic_windows(
+        segments=source.segments,
+        topics=[
+            topic("T1", float("inf"), 100, 0.9),
+            topic("T2", 150, 150, 0.8),
+        ],
+        target_min_duration_seconds=480,
+        final_max_duration_seconds=810,
+    )
+
+    assert windowed == []
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("segments", "proposed", "expected"),
