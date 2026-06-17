@@ -369,6 +369,52 @@ async def test_select_candidates_sends_windowed_transcript_to_boundary_prompt() 
 
 
 @pytest.mark.asyncio
+async def test_select_candidates_falls_back_to_full_transcript_when_windows_are_empty() -> None:
+    source = segmented_transcript((0, 300), (300, 600), (600, 900))
+    client = FakeStructuredClient(
+        [CuratorResponse(candidates=[output("A", 0, 600)])]
+    )
+
+    await CuratorEngine(client=client, model="gpt-curator").select_candidates(
+        transcript=source,
+        topics=TopicDiscoveryResponse(
+            topics=[topic("T1", float("nan"), 600, 0.9)]
+        ),
+        candidate_count=1,
+        min_duration_minutes=8,
+        max_duration_minutes=12,
+    )
+
+    prompt = str(client.calls[0]["user_prompt"])
+    assert '"segment_id": "s1"' in prompt
+    assert '"segment_id": "s2"' in prompt
+    assert '"segment_id": "s3"' in prompt
+
+
+@pytest.mark.asyncio
+async def test_select_candidates_normalizes_against_full_transcript_not_window() -> None:
+    source = segmented_transcript(
+        *[(second, second + 60) for second in range(0, 1800, 60)]
+    )
+    client = FakeStructuredClient(
+        [CuratorResponse(candidates=[output("A", 1200, 1680)])]
+    )
+
+    result = await CuratorEngine(client=client, model="gpt-curator").select_candidates(
+        transcript=source,
+        topics=TopicDiscoveryResponse(
+            topics=[topic("T1", 300, 360, 0.9)]
+        ),
+        candidate_count=1,
+        min_duration_minutes=8,
+        max_duration_minutes=12,
+    )
+
+    candidate = result.candidates[0]
+    assert (candidate.start_seconds, candidate.end_seconds) == (1200, 1680)
+
+
+@pytest.mark.asyncio
 async def test_curator_retries_once_with_validation_feedback() -> None:
     client = FakeStructuredClient(
         [
