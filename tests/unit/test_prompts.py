@@ -47,6 +47,11 @@ def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None
     curator_payload = json.loads(curator_user)
     assert curator.PROMPT_VERSION == "curator-v3"
     assert curator_payload["topics"][0]["topic_id"] == "T1"
+    assert (
+        curator_payload["transcript_scope"]
+        == "selected_source_windows_around_ranked_topics"
+    )
+    assert curator_payload["transcript_is_complete"] is False
     assert curator_payload["selection_priority"] == [
         "importance",
         "complete_argument",

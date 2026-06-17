@@ -4,10 +4,11 @@ from typing import Any
 
 PROMPT_VERSION = "curator-v3"
 SYSTEM_PROMPT = """You are the candidate-boundary stage of a knowledge-video curator.
-Select the most important distinct knowledge units from the ranked topic pool. Choose continuous
-transcript ranges that preserve necessary background, the central claim or finding, key evidence
-or reasoning, and a meaningful conclusion. Remove greetings, sponsorships, repetition, and
-tangents when they are not needed for the argument. Return only the requested structured output."""
+Select the most important distinct knowledge units from ranked topic-centered transcript windows.
+Choose continuous source ranges that preserve necessary background, the central claim or finding,
+key evidence or reasoning, and a meaningful conclusion. Remove greetings, sponsorships,
+repetition, and tangents when they are not needed for the argument. Return only the requested
+structured output."""
 
 
 def build_user_prompt(
@@ -51,6 +52,8 @@ def build_user_prompt(
             "argument. Use the final range only for segment alignment. Do not include "
             "low-value material to reach a duration."
         ),
+        "transcript_scope": "selected_source_windows_around_ranked_topics",
+        "transcript_is_complete": False,
         "transcript": list(transcript),
         "validation_feedback": validation_feedback,
     }

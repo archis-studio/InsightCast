@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from pydantic import BaseModel
 
@@ -362,10 +364,11 @@ async def test_select_candidates_sends_windowed_transcript_to_boundary_prompt() 
         max_duration_minutes=12,
     )
 
-    prompt = str(client.calls[0]["user_prompt"])
-    assert '"segment_id": "s1"' not in prompt
-    assert '"segment_id": "s6"' in prompt
-    assert '"segment_id": "s20"' not in prompt
+    payload = json.loads(str(client.calls[0]["user_prompt"]))
+    segment_ids = [segment["segment_id"] for segment in payload["transcript"]]
+    assert "s1" not in segment_ids
+    assert "s6" in segment_ids
+    assert "s20" not in segment_ids
 
 
 @pytest.mark.asyncio
@@ -385,10 +388,9 @@ async def test_select_candidates_falls_back_to_full_transcript_when_windows_are_
         max_duration_minutes=12,
     )
 
-    prompt = str(client.calls[0]["user_prompt"])
-    assert '"segment_id": "s1"' in prompt
-    assert '"segment_id": "s2"' in prompt
-    assert '"segment_id": "s3"' in prompt
+    payload = json.loads(str(client.calls[0]["user_prompt"]))
+    segment_ids = [segment["segment_id"] for segment in payload["transcript"]]
+    assert segment_ids == ["s1", "s2", "s3"]
 
 
 @pytest.mark.asyncio
