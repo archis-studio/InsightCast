@@ -44,7 +44,7 @@ def serialize_bilingual_ass(items: Sequence[SubtitleItem], *, title: str) -> str
     chinese_style = (
         "TraditionalChinese",
         "PingFang TC",
-        "46",
+        "54",
         "&H0082E0FF",
         "&H000000FF",
         "&H00101010",
@@ -69,7 +69,7 @@ def serialize_bilingual_ass(items: Sequence[SubtitleItem], *, title: str) -> str
     english_style = (
         "English",
         "Arial",
-        "44",
+        "50",
         "&H00FFFFFF",
         "&H000000FF",
         "&H00101010",
