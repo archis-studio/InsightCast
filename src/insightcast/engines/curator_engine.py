@@ -258,13 +258,20 @@ class CuratorEngine:
         final_max_duration_seconds = (
             accepted_max_duration_seconds + FINAL_DURATION_SEGMENT_TOLERANCE_SECONDS
         )
+        windowed_segments = _build_topic_windows(
+            segments=transcript.segments,
+            topics=topics.topics,
+            target_min_duration_seconds=target_min_duration_seconds,
+            final_max_duration_seconds=final_max_duration_seconds,
+        )
+        prompt_segments = windowed_segments or transcript.segments
         for attempt in range(2):
             response = await self.client.parse(
                 model=self.model,
                 system_prompt=curator.SYSTEM_PROMPT,
                 user_prompt=curator.build_user_prompt(
                     transcript=[
-                        segment.model_dump(mode="json") for segment in transcript.segments
+                        segment.model_dump(mode="json") for segment in prompt_segments
                     ],
                     topics=[topic.model_dump(mode="json") for topic in topics.topics],
                     candidate_count=candidate_count,

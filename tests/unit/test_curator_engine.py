@@ -344,6 +344,31 @@ async def test_curator_accepts_exact_ordered_candidates_and_overlap() -> None:
 
 
 @pytest.mark.asyncio
+async def test_select_candidates_sends_windowed_transcript_to_boundary_prompt() -> None:
+    source = segmented_transcript(
+        *[(second, second + 60) for second in range(0, 2400, 60)]
+    )
+    client = FakeStructuredClient(
+        [CuratorResponse(candidates=[output("A", 300, 900)])]
+    )
+
+    await CuratorEngine(client=client, model="gpt-curator").select_candidates(
+        transcript=source,
+        topics=TopicDiscoveryResponse(
+            topics=[topic("T1", 600, 660, 0.9)]
+        ),
+        candidate_count=1,
+        min_duration_minutes=8,
+        max_duration_minutes=12,
+    )
+
+    prompt = str(client.calls[0]["user_prompt"])
+    assert '"segment_id": "s1"' not in prompt
+    assert '"segment_id": "s6"' in prompt
+    assert '"segment_id": "s20"' not in prompt
+
+
+@pytest.mark.asyncio
 async def test_curator_retries_once_with_validation_feedback() -> None:
     client = FakeStructuredClient(
         [
