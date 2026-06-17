@@ -366,6 +366,8 @@ async def test_select_candidates_sends_windowed_transcript_to_boundary_prompt() 
 
     payload = json.loads(str(client.calls[0]["user_prompt"]))
     segment_ids = [segment["segment_id"] for segment in payload["transcript"]]
+    assert payload["transcript_scope"] == "selected_source_windows_around_ranked_topics"
+    assert payload["transcript_is_complete"] is False
     assert "s1" not in segment_ids
     assert "s6" in segment_ids
     assert "s20" not in segment_ids
@@ -390,6 +392,8 @@ async def test_select_candidates_falls_back_to_full_transcript_when_windows_are_
 
     payload = json.loads(str(client.calls[0]["user_prompt"]))
     segment_ids = [segment["segment_id"] for segment in payload["transcript"]]
+    assert payload["transcript_scope"] == "full_transcript"
+    assert payload["transcript_is_complete"] is True
     assert segment_ids == ["s1", "s2", "s3"]
 
 

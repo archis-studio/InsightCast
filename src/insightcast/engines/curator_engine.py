@@ -265,6 +265,12 @@ class CuratorEngine:
             final_max_duration_seconds=final_max_duration_seconds,
         )
         prompt_segments = windowed_segments or transcript.segments
+        transcript_scope = (
+            "selected_source_windows_around_ranked_topics"
+            if windowed_segments
+            else "full_transcript"
+        )
+        transcript_is_complete = not windowed_segments
         for attempt in range(2):
             response = await self.client.parse(
                 model=self.model,
@@ -282,6 +288,8 @@ class CuratorEngine:
                     final_min_duration_seconds=final_min_duration_seconds,
                     final_max_duration_seconds=final_max_duration_seconds,
                     validation_feedback=feedback,
+                    transcript_scope=transcript_scope,
+                    transcript_is_complete=transcript_is_complete,
                 ),
                 response_model=CuratorResponse,
             )
