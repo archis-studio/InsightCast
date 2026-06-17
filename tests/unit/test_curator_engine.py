@@ -560,6 +560,22 @@ def test_build_topic_windows_returns_empty_for_no_valid_ranges() -> None:
     assert windowed == []
 
 
+def test_build_topic_windows_skips_topics_outside_transcript_bounds() -> None:
+    source = segmented_transcript((0, 100), (100, 200), (200, 300))
+
+    windowed = curator_engine._build_topic_windows(
+        segments=source.segments,
+        topics=[
+            topic("T1", 500, 600, 0.9),
+            topic("T2", -200, -100, 0.8),
+        ],
+        target_min_duration_seconds=480,
+        final_max_duration_seconds=810,
+    )
+
+    assert windowed == []
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("segments", "proposed", "expected"),

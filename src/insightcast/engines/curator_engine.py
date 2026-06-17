@@ -466,6 +466,11 @@ def _build_topic_windows(
     for topic in topics:
         if not _is_valid_topic_range(topic):
             continue
+        if (
+            topic.start_seconds >= transcript_end
+            or topic.end_seconds <= transcript_start
+        ):
+            continue
         start = max(transcript_start, topic.start_seconds - pre_buffer_seconds)
         end = min(transcript_end, topic.end_seconds + post_buffer_seconds)
         start, end = _expand_window_to_duration(
