@@ -1,4 +1,5 @@
 import math
+from collections.abc import Sequence
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -11,6 +12,8 @@ from insightcast.prompts import curator, topic_discovery
 ACCEPTED_DURATION_TOLERANCE_SECONDS = 60
 FINAL_DURATION_SEGMENT_TOLERANCE_SECONDS = 30
 TOPIC_POOL_MULTIPLIER = 2
+TOPIC_PRE_BUFFER_SECONDS = 120
+TOPIC_POST_BUFFER_SECONDS = 180
 
 
 class CuratorModel(BaseModel):
@@ -421,6 +424,108 @@ class CuratorEngine:
                         f"candidate {candidate.candidate_id} {field_name} must not be empty"
                     )
         return errors
+
+
+def _build_topic_windows(
+    *,
+    segments: Sequence[TranscriptSegment],
+    topics: Sequence[TopicDiscoveryOutput],
+    target_min_duration_seconds: float,
+    final_max_duration_seconds: float,
+) -> list[TranscriptSegment]:
+    if not segments:
+        return []
+
+    transcript_start = segments[0].start_seconds
+    transcript_end = segments[-1].end_seconds
+    windows: list[tuple[float, float]] = []
+    pre_buffer_seconds = max(
+        TOPIC_PRE_BUFFER_SECONDS,
+        target_min_duration_seconds / 4,
+    )
+    post_buffer_seconds = max(
+        TOPIC_POST_BUFFER_SECONDS,
+        target_min_duration_seconds / 4,
+    )
+
+    for topic in topics:
+        if not _is_valid_topic_range(topic):
+            continue
+        start = max(transcript_start, topic.start_seconds - pre_buffer_seconds)
+        end = min(transcript_end, topic.end_seconds + post_buffer_seconds)
+        start, end = _expand_window_to_duration(
+            start,
+            end,
+            minimum_duration_seconds=min(
+                final_max_duration_seconds,
+                target_min_duration_seconds + post_buffer_seconds,
+            ),
+            transcript_start=transcript_start,
+            transcript_end=transcript_end,
+        )
+        if end > start:
+            windows.append((start, end))
+
+    if not windows:
+        return []
+
+    merged = _merge_time_windows(windows)
+    return [
+        segment
+        for segment in segments
+        if any(
+            segment.end_seconds >= start and segment.start_seconds < end
+            for start, end in merged
+        )
+    ]
+
+
+def _is_valid_topic_range(topic: TopicDiscoveryOutput) -> bool:
+    return (
+        math.isfinite(topic.start_seconds)
+        and math.isfinite(topic.end_seconds)
+        and topic.start_seconds >= 0
+        and topic.end_seconds > topic.start_seconds
+    )
+
+
+def _expand_window_to_duration(
+    start: float,
+    end: float,
+    *,
+    minimum_duration_seconds: float,
+    transcript_start: float,
+    transcript_end: float,
+) -> tuple[float, float]:
+    available_duration = transcript_end - transcript_start
+    target_duration = min(minimum_duration_seconds, available_duration)
+    current_duration = end - start
+    if current_duration >= target_duration:
+        return start, end
+
+    missing = target_duration - current_duration
+    expanded_start = max(transcript_start, start - missing / 2)
+    expanded_end = min(transcript_end, end + missing / 2)
+
+    remaining = target_duration - (expanded_end - expanded_start)
+    if remaining > 0 and expanded_start == transcript_start:
+        expanded_end = min(transcript_end, expanded_end + remaining)
+    elif remaining > 0 and expanded_end == transcript_end:
+        expanded_start = max(transcript_start, expanded_start - remaining)
+
+    return expanded_start, expanded_end
+
+
+def _merge_time_windows(windows: Sequence[tuple[float, float]]) -> list[tuple[float, float]]:
+    ordered = sorted(windows)
+    merged: list[tuple[float, float]] = []
+    for start, end in ordered:
+        if not merged or start > merged[-1][1]:
+            merged.append((start, end))
+            continue
+        prior_start, prior_end = merged[-1]
+        merged[-1] = (prior_start, max(prior_end, end))
+    return merged
 
 
 def _normalize_candidate(
