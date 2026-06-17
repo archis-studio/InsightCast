@@ -372,6 +372,68 @@ async def test_curator_retries_once_with_validation_feedback() -> None:
     assert "final range 390" in retry_prompt
 
 
+def test_build_topic_windows_adds_context_and_clamps_to_transcript() -> None:
+    source = segmented_transcript(
+        (0, 60),
+        (60, 120),
+        (120, 180),
+        (180, 240),
+        (240, 300),
+        (300, 360),
+        (360, 420),
+        (420, 480),
+        (480, 540),
+        (540, 600),
+        (600, 660),
+        (660, 720),
+        (720, 780),
+        (780, 840),
+        (840, 900),
+    )
+
+    windowed = curator_engine._build_topic_windows(
+        segments=source.segments,
+        topics=[topic("T1", 300, 360, 0.9)],
+        target_min_duration_seconds=480,
+        final_max_duration_seconds=810,
+    )
+
+    assert [segment.segment_id for segment in windowed] == [
+        "s1",
+        "s2",
+        "s3",
+        "s4",
+        "s5",
+        "s6",
+        "s7",
+        "s8",
+        "s9",
+        "s10",
+        "s11",
+        "s12",
+    ]
+
+
+def test_build_topic_windows_merges_overlaps_and_preserves_order() -> None:
+    source = segmented_transcript(
+        *[(second, second + 60) for second in range(0, 1800, 60)]
+    )
+
+    windowed = curator_engine._build_topic_windows(
+        segments=source.segments,
+        topics=[
+            topic("T1", 300, 420, 0.9),
+            topic("T2", 600, 720, 0.8),
+        ],
+        target_min_duration_seconds=480,
+        final_max_duration_seconds=810,
+    )
+
+    ids = [segment.segment_id for segment in windowed]
+    assert ids == [f"s{index}" for index in range(1, 18)]
+    assert len(ids) == len(set(ids))
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("segments", "proposed", "expected"),
