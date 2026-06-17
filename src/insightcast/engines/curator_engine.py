@@ -456,10 +456,7 @@ def _build_topic_windows(
         start, end = _expand_window_to_duration(
             start,
             end,
-            minimum_duration_seconds=min(
-                final_max_duration_seconds,
-                target_min_duration_seconds + post_buffer_seconds,
-            ),
+            minimum_duration_seconds=final_max_duration_seconds,
             transcript_start=transcript_start,
             transcript_end=transcript_end,
         )
@@ -474,7 +471,7 @@ def _build_topic_windows(
         segment
         for segment in segments
         if any(
-            segment.end_seconds >= start and segment.start_seconds < end
+            segment.end_seconds > start and segment.start_seconds < end
             for start, end in merged
         )
     ]

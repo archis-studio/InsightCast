@@ -411,6 +411,8 @@ def test_build_topic_windows_adds_context_and_clamps_to_transcript() -> None:
         "s10",
         "s11",
         "s12",
+        "s13",
+        "s14",
     ]
 
 
@@ -430,7 +432,7 @@ def test_build_topic_windows_merges_overlaps_and_preserves_order() -> None:
     )
 
     ids = [segment.segment_id for segment in windowed]
-    assert ids == [f"s{index}" for index in range(1, 18)]
+    assert ids == [f"s{index}" for index in range(1, 20)]
     assert len(ids) == len(set(ids))
 
 
