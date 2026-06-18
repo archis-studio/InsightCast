@@ -51,10 +51,10 @@ def test_serialize_bilingual_ass_has_styles_escaped_text_and_stable_events() -> 
     english_style = next(
         line for line in output.splitlines() if line.startswith("Style: English")
     )
-    assert chinese_style.split(",")[2] == "54"
-    assert english_style.split(",")[2] == "50"
+    assert chinese_style.split(",")[2] == "58"
+    assert english_style.split(",")[2] == "54"
     assert "&H0082E0FF" in chinese_style
-    assert int(chinese_style.split(",")[-2]) > int(english_style.split(",")[-2])
+    assert int(chinese_style.split(",")[-2]) - int(english_style.split(",")[-2]) >= 145
     assert "Dialogue: 0,0:00:01.00,0:00:03.46,English" in output
     assert output.index(
         "Dialogue: 1,0:00:01.00,0:00:03.46,TraditionalChinese"
