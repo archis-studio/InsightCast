@@ -51,6 +51,7 @@ def _build_runtime(settings: Settings) -> tuple[JobService, FfmpegClient]:
     ytdlp = YtDlpClient(
         executable=str(Path(sys.executable).with_name("yt-dlp")),
         max_height=settings.video_max_height,
+        js_runtime=settings.ytdlp_js_runtime,
     )
     sdk = OpenAI(
         api_key=settings.openai_api_key,

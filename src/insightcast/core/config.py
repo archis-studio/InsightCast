@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     whisper_device: str = "auto"
 
     ffmpeg_bin: str = "ffmpeg"
+    ytdlp_js_runtime: str | None = "node"
     video_max_height: int = Field(default=1080, ge=1, le=4320)
     video_crf: int = Field(default=18, ge=0, le=51)
     openai_timeout_seconds: float = Field(default=120, gt=0)
@@ -103,7 +104,13 @@ class Settings(BaseSettings):
             raise ValueError("OPENAI_API_KEY is missing or is an obvious placeholder")
         return stripped
 
-    @field_validator("openai_base_url", "curator_model", "translation_model", "metadata_model")
+    @field_validator(
+        "openai_base_url",
+        "curator_model",
+        "translation_model",
+        "metadata_model",
+        "ytdlp_js_runtime",
+    )
     @classmethod
     def blank_optional_strings_are_none(cls, value: str | None) -> str | None:
         if value is None:

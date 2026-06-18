@@ -73,6 +73,26 @@ async def test_download_video_caps_height_and_merges_mp4(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_ytdlp_commands_include_configured_js_runtime(tmp_path: Path) -> None:
+    payload = {
+        "id": "abc123DEF_-",
+        "title": "Video Title",
+        "duration": 123.5,
+        "webpage_url": "https://www.youtube.com/watch?v=abc123DEF_-",
+    }
+    runner = RecordingRunner(
+        subprocess.CompletedProcess(args=[], returncode=0, stdout=json.dumps(payload), stderr="")
+    )
+    client = YtDlpClient(js_runtime="node", runner=runner)
+
+    await client.fetch_metadata("https://youtu.be/abc123DEF_-")
+    await client.download_video("https://youtu.be/abc123DEF_-", tmp_path / "source.mp4")
+
+    for command in runner.calls:
+        assert command[1:3] == ["--js-runtimes", "node"]
+
+
+@pytest.mark.asyncio
 async def test_ytdlp_failure_becomes_stable_application_error() -> None:
     runner = RecordingRunner(
         subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="private failure")

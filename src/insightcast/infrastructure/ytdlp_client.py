@@ -35,15 +35,18 @@ class YtDlpClient:
         *,
         executable: str = "yt-dlp",
         max_height: int = 1080,
+        js_runtime: str | None = None,
         runner: ProcessRunner = _run_process,
     ) -> None:
         self.executable = executable
         self.max_height = max_height
+        self.js_runtime = js_runtime
         self.runner = runner
 
     async def fetch_metadata(self, youtube_url: str) -> YouTubeMetadata:
         command = [
             self.executable,
+            *self._js_runtime_args(),
             "--dump-single-json",
             "--skip-download",
             "--no-playlist",
@@ -79,6 +82,7 @@ class YtDlpClient:
         )
         command = [
             self.executable,
+            *self._js_runtime_args(),
             "--no-playlist",
             "--format",
             format_selector,
@@ -90,6 +94,11 @@ class YtDlpClient:
         ]
         await self._execute(command)
         return resolved_destination
+
+    def _js_runtime_args(self) -> list[str]:
+        if self.js_runtime is None:
+            return []
+        return ["--js-runtimes", self.js_runtime]
 
     async def _execute(self, command: list[str]) -> subprocess.CompletedProcess[str]:
         try:

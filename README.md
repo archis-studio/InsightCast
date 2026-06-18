@@ -103,6 +103,7 @@ uv sync --extra dev
 | `WHISPER_MODEL_SIZE` | 否 | `large-v3` | faster-whisper model size。 |
 | `WHISPER_DEVICE` | 否 | `auto` | faster-whisper device，例如 `cpu`、`cuda`。 |
 | `FFMPEG_BIN` | 否 | `ffmpeg` | FFmpeg executable path。 |
+| `YTDLP_JS_RUNTIME` | 否 | `node` | 傳給 yt-dlp 的 JavaScript runtime，例如 `node`、`deno` 或 `bun`；設為空白可停用。 |
 | `VIDEO_MAX_HEIGHT` | 否 | `1080` | yt-dlp 下載解析度上限。 |
 | `VIDEO_CRF` | 否 | `18` | H.264 CRF，數值越低通常品質與檔案越大。 |
 | `OPENAI_TIMEOUT_SECONDS` | 否 | `120` | OpenAI request timeout。 |
