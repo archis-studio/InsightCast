@@ -39,6 +39,40 @@ def test_stage_record_requires_error_for_failed_stage() -> None:
         )
 
 
+def test_stage_record_rejects_error_for_non_failed_stage() -> None:
+    with pytest.raises(ValueError, match="non-failed stages must not carry error"):
+        StageRecord(
+            stage=PipelineStage.CUT_CLIP,
+            status=StageStatus.COMPLETED,
+            started_at=NOW,
+            completed_at=NOW,
+            elapsed_seconds=1.0,
+            resume_strategy="reuse cut clip",
+            error=JobError(
+                stage="cut_clip",
+                error_code=ErrorCode.VIDEO_RENDER_FAILED,
+                message="Unexpected error.",
+            ),
+        )
+
+
+def test_stage_record_rejects_completion_before_start() -> None:
+    with pytest.raises(ValueError, match="completed_at must not precede started_at"):
+        StageRecord(
+            stage=PipelineStage.CUT_CLIP,
+            status=StageStatus.COMPLETED,
+            started_at=datetime(2026, 6, 19, 12, 1, tzinfo=UTC),
+            completed_at=NOW,
+            elapsed_seconds=1.0,
+            resume_strategy="reuse cut clip",
+        )
+
+
+def test_stage_manifest_rejects_unknown_schema_version() -> None:
+    with pytest.raises(ValueError):
+        StageManifest(schema_version=2, operation_id="job-1", render_id="render-1")
+
+
 def test_stage_manifest_reports_latest_resume_point() -> None:
     manifest = StageManifest(
         schema_version=1,

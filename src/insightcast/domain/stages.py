@@ -1,6 +1,7 @@
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, computed_field, model_validator
 
@@ -60,7 +61,7 @@ class StageRecord(DomainModel):
 
 
 class StageManifest(DomainModel):
-    schema_version: int = 1
+    schema_version: Literal[1] = 1
     operation_id: str = Field(min_length=1)
     render_id: str = Field(min_length=1)
     candidate_id: str | None = None
