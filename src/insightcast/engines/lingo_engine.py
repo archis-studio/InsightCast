@@ -82,6 +82,7 @@ class LingoEngine:
         *,
         batch_index: int,
         batch_path: list[int],
+        repair_attempted: bool = False,
     ) -> list[TranslationItem]:
         assert self.client is not None
         assert self.model is not None
@@ -108,17 +109,50 @@ class LingoEngine:
         )
         if translation_ids == source_ids and unreadable is None:
             return response.items
+        validation_error = {
+            "source_segment_ids": source_ids,
+            "translation_segment_ids": translation_ids,
+            "unreadable_segment_id": unreadable.segment_id if unreadable else None,
+            "batch_index": batch_index,
+            "batch_path": batch_path,
+        }
+        if not repair_attempted:
+            repair_response = await self.client.parse(
+                model=self.model,
+                system_prompt=translation_prompt.SYSTEM_PROMPT,
+                user_prompt=translation_prompt.build_repair_user_prompt(
+                    items=[
+                        {"segment_id": segment.segment_id, "text": segment.text}
+                        for segment in batch
+                    ],
+                    validation_error=validation_error,
+                ),
+                response_model=TranslationResponse,
+            )
+            repair_ids = [translation.segment_id for translation in repair_response.items]
+            repair_unreadable = next(
+                (
+                    translation
+                    for translation in repair_response.items
+                    if not _is_readable_translation(translation.text)
+                ),
+                None,
+            )
+            if repair_ids == source_ids and repair_unreadable is None:
+                return repair_response.items
         if len(batch) > 1:
             midpoint = len(batch) // 2
             left = await self._translate_batch(
                 batch[:midpoint],
                 batch_index=batch_index,
                 batch_path=[*batch_path, 0],
+                repair_attempted=False,
             )
             right = await self._translate_batch(
                 batch[midpoint:],
                 batch_index=batch_index,
                 batch_path=[*batch_path, 1],
+                repair_attempted=False,
             )
             return left + right
         if unreadable is not None:

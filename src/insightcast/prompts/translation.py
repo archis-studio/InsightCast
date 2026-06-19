@@ -11,3 +11,22 @@ one-to-one item mapping. Avoid overly literal phrasing."""
 def build_user_prompt(*, items: Sequence[Mapping[str, Any]]) -> str:
     return json.dumps({"items": list(items)}, ensure_ascii=False, indent=2)
 
+
+def build_repair_user_prompt(
+    *,
+    items: Sequence[Mapping[str, Any]],
+    validation_error: Mapping[str, Any],
+) -> str:
+    return json.dumps(
+        {
+            "instruction": (
+                "Repair this subtitle translation batch. Return exactly one translated item "
+                "for each source item, preserve item order and segment_id values, and do not "
+                "return empty or punctuation-only translations."
+            ),
+            "validation_error": dict(validation_error),
+            "items": list(items),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )

@@ -91,6 +91,7 @@ async def test_translate_clip_splits_mismatched_batch_and_preserves_order() -> N
     client = RecordingTranslationClient(
         [
             translation_response(*[f"s{index}" for index in range(0, 38)]),
+            translation_response(*[f"s{index}" for index in range(0, 38)]),
             translation_response(*[f"s{index}" for index in range(0, 20)]),
             translation_response(*[f"s{index}" for index in range(20, 40)]),
         ]
@@ -105,7 +106,7 @@ async def test_translate_clip_splits_mismatched_batch_and_preserves_order() -> N
     assert [
         len(json.loads(str(call["user_prompt"]))["items"])
         for call in client.calls
-    ] == [40, 20, 20]
+    ] == [40, 40, 20, 20]
     assert [item.segment_id for item in result] == [
         f"s{index}" for index in range(40)
     ]
@@ -119,7 +120,9 @@ async def test_translate_clip_reports_terminal_single_item_mapping_mismatch() ->
         end_seconds=1,
         text="Source",
     )
-    client = RecordingTranslationClient([TranslationResponse(items=[])])
+    client = RecordingTranslationClient(
+        [TranslationResponse(items=[]), TranslationResponse(items=[])]
+    )
 
     with pytest.raises(InsightCastError) as exc_info:
         await LingoEngine(client=client, model="gpt-translation").translate_clip(
@@ -154,6 +157,7 @@ async def test_translate_clip_splits_batch_with_unreadable_translation() -> None
     client = RecordingTranslationClient(
         [
             translation_response_with_text(("s0", "..."), ("s1", "限制")),
+            translation_response_with_text(("s0", "..."), ("s1", "限制")),
             translation_response_with_text(("s0", "在範圍內")),
             translation_response_with_text(("s1", "限制")),
         ]
@@ -168,8 +172,32 @@ async def test_translate_clip_splits_batch_with_unreadable_translation() -> None
     assert [
         len(json.loads(str(call["user_prompt"]))["items"])
         for call in client.calls
-    ] == [2, 1, 1]
+    ] == [2, 2, 1, 1]
     assert [item.traditional_chinese_text for item in result] == ["在範圍內", "限制"]
+
+
+@pytest.mark.asyncio
+async def test_translate_batch_retries_with_repair_prompt_before_splitting() -> None:
+    segments = [
+        TranscriptSegment(segment_id="s0", start_seconds=0, end_seconds=1, text="First"),
+        TranscriptSegment(segment_id="s1", start_seconds=1, end_seconds=2, text="Second"),
+    ]
+    client = RecordingTranslationClient(
+        [
+            TranslationResponse(items=[]),
+            translation_response("s0", "s1"),
+        ]
+    )
+
+    result = await LingoEngine(client=client, model="gpt-translation").translate_clip(
+        segments=segments,
+        clip_start_seconds=0,
+        clip_end_seconds=2,
+    )
+
+    assert [item.segment_id for item in result] == ["s0", "s1"]
+    assert len(client.calls) == 2
+    assert "Repair this subtitle translation batch" in str(client.calls[1]["user_prompt"])
 
 
 @pytest.mark.asyncio
@@ -181,7 +209,10 @@ async def test_translate_clip_reports_terminal_unreadable_translation() -> None:
         text="Within",
     )
     client = RecordingTranslationClient(
-        [translation_response_with_text(("s0", "..."))]
+        [
+            translation_response_with_text(("s0", "...")),
+            translation_response_with_text(("s0", "...")),
+        ]
     )
 
     with pytest.raises(InsightCastError) as exc_info:
