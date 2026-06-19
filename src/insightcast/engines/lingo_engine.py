@@ -140,6 +140,8 @@ class LingoEngine:
             )
             if repair_ids == source_ids and repair_unreadable is None:
                 return repair_response.items
+            translation_ids = repair_ids
+            unreadable = repair_unreadable
         if len(batch) > 1:
             midpoint = len(batch) // 2
             left = await self._translate_batch(

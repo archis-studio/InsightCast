@@ -229,6 +229,65 @@ async def test_translate_clip_reports_terminal_unreadable_translation() -> None:
     assert exc_info.value.details["translation_text"] == "..."
 
 
+@pytest.mark.asyncio
+async def test_translate_clip_reports_repair_unreadable_after_original_mismatch() -> None:
+    segment = TranscriptSegment(
+        segment_id="s0",
+        start_seconds=0,
+        end_seconds=1,
+        text="Within",
+    )
+    client = RecordingTranslationClient(
+        [
+            TranslationResponse(items=[]),
+            translation_response_with_text(("s0", "...")),
+        ]
+    )
+
+    with pytest.raises(InsightCastError) as exc_info:
+        await LingoEngine(client=client, model="gpt-translation").translate_clip(
+            segments=[segment],
+            clip_start_seconds=0,
+            clip_end_seconds=1,
+        )
+
+    assert exc_info.value.error_code == ErrorCode.SUBTITLE_GENERATION_FAILED
+    assert exc_info.value.message == "Translation must contain readable text."
+    assert exc_info.value.details["segment_id"] == "s0"
+    assert exc_info.value.details["translation_text"] == "..."
+
+
+@pytest.mark.asyncio
+async def test_translate_clip_reports_repair_mapping_after_original_unreadable() -> None:
+    segment = TranscriptSegment(
+        segment_id="s0",
+        start_seconds=0,
+        end_seconds=1,
+        text="Within",
+    )
+    client = RecordingTranslationClient(
+        [
+            translation_response_with_text(("s0", "...")),
+            TranslationResponse(items=[]),
+        ]
+    )
+
+    with pytest.raises(InsightCastError) as exc_info:
+        await LingoEngine(client=client, model="gpt-translation").translate_clip(
+            segments=[segment],
+            clip_start_seconds=0,
+            clip_end_seconds=1,
+        )
+
+    assert exc_info.value.error_code == ErrorCode.SUBTITLE_GENERATION_FAILED
+    assert (
+        exc_info.value.message
+        == "Translation batch must map one-to-one to source subtitle items."
+    )
+    assert exc_info.value.details["source_segment_ids"] == ["s0"]
+    assert exc_info.value.details["translation_segment_ids"] == []
+
+
 def test_prepare_subtitle_items_filters_clamps_and_relativizes_segments() -> None:
     segments = [
         TranscriptSegment(segment_id="before", start_seconds=1, end_seconds=4, text="Before"),
