@@ -153,6 +153,8 @@ async def create_render(
         CandidateSelectionRequest(
             candidate_ids=request.candidate_ids,
             force_render=request.force_render,
+            force_translate=request.force_translate,
+            force_metadata=request.force_metadata,
         ),
     )
     return RenderBatchResponse(

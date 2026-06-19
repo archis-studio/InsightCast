@@ -140,6 +140,8 @@ class DirectRenderJob(BaseJob):
 class CandidateSelectionRequest(DomainModel):
     candidate_ids: list[str]
     force_render: bool = False
+    force_translate: bool = False
+    force_metadata: bool = False
 
     @field_validator("candidate_ids", mode="before")
     @classmethod

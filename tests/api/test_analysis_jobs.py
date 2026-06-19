@@ -21,6 +21,7 @@ class FakeService:
         self.queue: asyncio.Queue[object] = asyncio.Queue()
         self.tmp_path = tmp_path
         self.created: list[dict[str, object]] = []
+        self.render_requests: list[object] = []
 
     async def process(self, _item: object) -> None:
         return None
@@ -57,6 +58,7 @@ class FakeService:
         )
 
     async def create_render(self, job_id: str, request: object) -> RenderBatch:
+        self.render_requests.append(request)
         if job_id == "not-ready":
             raise InsightCastError(
                 ErrorCode.INVALID_JOB_STATE,
@@ -132,6 +134,27 @@ def test_analysis_routes_queue_get_render_and_list(tmp_path: Path) -> None:
     assert render.status_code == 202
     assert render.json()["render_id"] == "render-1"
     assert batches.json()["render_batches"] == []
+
+
+def test_analysis_route_passes_force_render_flags_to_service(tmp_path: Path) -> None:
+    client, service = make_client(tmp_path)
+    with client:
+        response = client.post(
+            "/api/v1/analysis-jobs/analysis-1/renders",
+            json={
+                "candidate_ids": ["A", "C"],
+                "force_render": True,
+                "force_translate": True,
+                "force_metadata": True,
+            },
+        )
+
+    assert response.status_code == 202
+    request = service.render_requests[0]
+    assert request.candidate_ids == ["A", "C"]
+    assert request.force_render is True
+    assert request.force_translate is True
+    assert request.force_metadata is True
 
 
 def test_analysis_route_uses_configured_defaults_for_omitted_fields(tmp_path: Path) -> None:

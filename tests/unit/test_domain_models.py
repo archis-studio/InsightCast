@@ -17,6 +17,19 @@ def test_candidate_selection_normalizes_string_and_duplicate_list() -> None:
     assert CandidateSelectionRequest(candidate_ids=["A", "C", "A"]).candidate_ids == ["A", "C"]
 
 
+def test_candidate_selection_request_carries_force_substeps() -> None:
+    request = CandidateSelectionRequest(
+        candidate_ids="a",
+        force_render=False,
+        force_translate=True,
+        force_metadata=True,
+    )
+
+    assert request.candidate_ids == ["A"]
+    assert request.force_translate is True
+    assert request.force_metadata is True
+
+
 def test_candidate_exposes_duration_seconds() -> None:
     candidate = Candidate(
         candidate_id="A",

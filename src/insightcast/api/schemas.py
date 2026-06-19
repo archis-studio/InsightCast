@@ -70,6 +70,16 @@ class RenderCreateRequest(ApiModel):
         description="Create a new timestamped render without overwriting previous output.",
         examples=[False],
     )
+    force_translate: bool = Field(
+        default=False,
+        description="Redo subtitle translation even when reusable translation artifacts exist.",
+        examples=[False],
+    )
+    force_metadata: bool = Field(
+        default=False,
+        description="Regenerate YouTube metadata even when reusable metadata exists.",
+        examples=[False],
+    )
 
 
 class DirectRenderCreateRequest(ApiModel):
