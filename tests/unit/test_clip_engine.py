@@ -103,3 +103,35 @@ async def test_clip_engine_retains_temporary_clip_when_render_fails(tmp_path: Pa
         )
 
     assert (work_dir / "video.unburned.mp4").exists()
+
+
+@pytest.mark.asyncio
+async def test_clip_engine_exposes_individual_render_steps(tmp_path) -> None:
+    ffmpeg = FakeFfmpeg()
+    lingo = FakeLingo()
+    engine = ClipEngine(ffmpeg=ffmpeg, lingo=lingo)
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    work_dir = tmp_path / "work"
+    output_dir = tmp_path / "render"
+    candidate = Candidate(
+        candidate_id="A",
+        start_seconds=10,
+        end_seconds=12,
+        suggested_title="Title",
+        selection_reason="Reason",
+        summary="Summary",
+    )
+
+    temporary = await engine.cut_clip(source, candidate, work_dir)
+    subtitles = await engine.translate_subtitles(
+        [TranscriptSegment(segment_id="s1", start_seconds=10, end_seconds=12, text="Hello")],
+        candidate,
+    )
+    srt, ass = engine.write_subtitles(subtitles, candidate, output_dir)
+    burned = await engine.burn_subtitles(temporary, ass, output_dir)
+
+    assert temporary == work_dir / "video.unburned.mp4"
+    assert srt == output_dir / "subtitles.zh-TW.srt"
+    assert ass == output_dir / "subtitles.bilingual.ass"
+    assert burned == output_dir / "video.mp4"
