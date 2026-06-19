@@ -14,6 +14,16 @@ class RenderValidator:
         expected_segments: list[TranscriptSegment],
         subtitle_items: list[SubtitleItem],
     ) -> None:
+        if not expected_segments:
+            raise InsightCastError(
+                ErrorCode.RENDER_ARTIFACT_INVALID,
+                "Rendered subtitles do not contain any selected transcript segments.",
+                details={
+                    "expected_segment_ids": [],
+                    "actual_segment_ids": [item.segment_id for item in subtitle_items],
+                },
+                stage="validate_render",
+            )
         expected_ids = [segment.segment_id for segment in expected_segments]
         actual_ids = [item.segment_id for item in subtitle_items]
         if actual_ids != expected_ids:
@@ -34,7 +44,7 @@ class RenderValidator:
                     details={"segment_id": item.segment_id},
                     stage="validate_render",
                 )
-            if not item.traditional_chinese_text.strip():
+            if not _is_readable_text(item.traditional_chinese_text):
                 raise InsightCastError(
                     ErrorCode.SUBTITLE_FILE_INVALID,
                     "Rendered subtitle text is empty.",
@@ -50,7 +60,7 @@ class RenderValidator:
         missing = [
             name
             for name, path in required.items()
-            if not path.is_file() or path.stat().st_size <= 0
+            if path.is_symlink() or not path.is_file() or path.stat().st_size <= 0
         ]
         if missing:
             raise InsightCastError(
@@ -59,3 +69,8 @@ class RenderValidator:
                 details={"missing_or_empty": missing},
                 stage="validate_render",
             )
+
+
+def _is_readable_text(text: str) -> bool:
+    stripped = text.strip()
+    return bool(stripped) and any(character.isalnum() for character in stripped)
