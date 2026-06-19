@@ -165,6 +165,36 @@ def test_render_validator_rejects_missing_or_empty_artifacts(tmp_path) -> None:
     assert "video" in exc_info.value.details["missing_or_empty"]
 
 
+def test_render_validator_rejects_missing_artifacts(tmp_path) -> None:
+    render_dir = complete_render_dir(tmp_path)
+    (render_dir / "youtube-metadata.json").unlink()
+
+    with pytest.raises(InsightCastError) as exc_info:
+        RenderValidator().validate(
+            render_dir=render_dir,
+            expected_segments=[
+                TranscriptSegment(
+                    segment_id="s1",
+                    start_seconds=0,
+                    end_seconds=1,
+                    text="Hello",
+                )
+            ],
+            subtitle_items=[
+                SubtitleItem(
+                    segment_id="s1",
+                    start_seconds=0,
+                    end_seconds=1,
+                    english_text="Hello",
+                    traditional_chinese_text="你好",
+                )
+            ],
+        )
+
+    assert exc_info.value.error_code == ErrorCode.RENDER_ARTIFACT_INVALID
+    assert "youtube_metadata" in exc_info.value.details["missing_or_empty"]
+
+
 def test_render_validator_rejects_symlink_artifacts(tmp_path) -> None:
     render_dir = complete_render_dir(tmp_path)
     target = tmp_path / "external.mp4"
