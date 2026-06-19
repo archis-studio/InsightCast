@@ -28,6 +28,8 @@ from insightcast.domain.models import (
     RenderBatch,
     Transcript,
 )
+from insightcast.domain.stages import PipelineStage, StageManifest, StageRecord, StageStatus
+from insightcast.engines.render_validator import RenderValidator
 from insightcast.infrastructure.transcription.base import (
     TranscriptionSpec,
     build_transcript_cache_key,
@@ -39,6 +41,7 @@ from insightcast.storage.manifests import (
     RenderKind,
     RenderState,
 )
+from insightcast.storage.stage_store import StageStore
 from insightcast.storage.video_store import VideoStore
 from insightcast.utils.files import build_run_id
 from insightcast.utils.youtube import extract_youtube_video_id, normalize_youtube_url
@@ -82,6 +85,8 @@ class JobService:
         queue: asyncio.Queue[WorkItem] | None = None,
         clock: Callable[[], datetime] = _utc_now,
         id_factory: Callable[[], str] = _new_id,
+        stage_store: StageStore | None = None,
+        render_validator: RenderValidator | None = None,
     ) -> None:
         self.output_root = output_root.expanduser().resolve()
         self.work_root = work_root.expanduser().resolve()
@@ -94,6 +99,8 @@ class JobService:
         self.queue: asyncio.Queue[WorkItem] = queue or asyncio.Queue()
         self.clock = clock
         self.id_factory = id_factory
+        self.stage_store = stage_store or StageStore()
+        self.render_validator = render_validator or RenderValidator()
 
         self.analysis_jobs: dict[str, AnalysisJob] = {}
         self.direct_jobs: dict[str, DirectRenderJob] = {}
@@ -521,23 +528,115 @@ class JobService:
                         },
                         stage="rendering",
                     )
-                await self._run_stage(
+                stage_manifest = self._load_stage_manifest(
+                    render_dir=candidate_dir,
+                    job_id=job.job_id,
+                    render_id=batch.render_id,
+                    candidate_id=candidate_id,
+                )
+                selected_segments = [
+                    segment
+                    for segment in transcript.segments
+                    if segment.end_seconds > candidate.start_seconds
+                    and segment.start_seconds < candidate.end_seconds
+                ]
+                temporary_clip = await self._run_stage(
                     job,
-                    "candidate_clip_render",
-                    lambda candidate=candidate,
-                    candidate_dir=candidate_dir: self.clip_engine.render(
-                        source_video=job.source_artifacts.source_video,
-                        transcript_segments=transcript.segments,
-                        selection=candidate,
-                        output_dir=candidate_dir,
-                        work_dir=self.work_root / job.job_id / batch.render_id,
+                    PipelineStage.CUT_CLIP.value,
+                    lambda candidate=candidate: self.clip_engine.cut_clip(
+                        job.source_artifacts.source_video,
+                        candidate,
+                        self.work_root / job.job_id / batch.render_id,
+                    ),
+                )
+                stage_manifest = self._append_stage_record(
+                    render_dir=candidate_dir,
+                    manifest=stage_manifest,
+                    record=StageRecord(
+                        stage=PipelineStage.CUT_CLIP,
+                        status=StageStatus.COMPLETED,
+                        resume_strategy=(
+                            "reuse video.unburned.mp4 when source fingerprint "
+                            "and candidate timing match"
+                        ),
+                        artifacts={"temporary_clip": temporary_clip},
+                        fresh=True,
+                    ),
+                )
+                subtitle_items = await self._run_stage(
+                    job,
+                    PipelineStage.TRANSLATE_SUBTITLES.value,
+                    lambda candidate=candidate: self.clip_engine.translate_subtitles(
+                        transcript.segments,
+                        candidate,
+                    ),
+                )
+                stage_manifest = self._append_stage_record(
+                    render_dir=candidate_dir,
+                    manifest=stage_manifest,
+                    record=StageRecord(
+                        stage=PipelineStage.TRANSLATE_SUBTITLES,
+                        status=StageStatus.COMPLETED,
+                        resume_strategy="reuse validated translation batches",
+                        fresh=True,
+                    ),
+                )
+                srt_path, ass_path = await self._run_stage(
+                    job,
+                    PipelineStage.WRITE_SUBTITLES.value,
+                    lambda subtitle_items=subtitle_items,
+                    candidate=candidate,
+                    candidate_dir=candidate_dir: asyncio.to_thread(
+                        self.clip_engine.write_subtitles,
+                        subtitle_items,
+                        candidate,
+                        candidate_dir,
+                    ),
+                )
+                stage_manifest = self._append_stage_record(
+                    render_dir=candidate_dir,
+                    manifest=stage_manifest,
+                    record=StageRecord(
+                        stage=PipelineStage.WRITE_SUBTITLES,
+                        status=StageStatus.COMPLETED,
+                        resume_strategy=(
+                            "reuse subtitle files when translation batches match"
+                        ),
+                        artifacts={"srt": srt_path, "ass": ass_path},
+                        fresh=True,
+                    ),
+                )
+                burned_path = await self._run_stage(
+                    job,
+                    PipelineStage.BURN_SUBTITLES.value,
+                    lambda temporary_clip=temporary_clip,
+                    ass_path=ass_path,
+                    candidate_dir=candidate_dir: self.clip_engine.burn_subtitles(
+                        temporary_clip,
+                        ass_path,
+                        candidate_dir,
+                    ),
+                )
+                temporary_clip.unlink(missing_ok=True)
+                stage_manifest = self._append_stage_record(
+                    render_dir=candidate_dir,
+                    manifest=stage_manifest,
+                    record=StageRecord(
+                        stage=PipelineStage.BURN_SUBTITLES,
+                        status=StageStatus.COMPLETED,
+                        resume_strategy=(
+                            "reuse burned video when subtitle files and source "
+                            "fingerprint match"
+                        ),
+                        artifacts={"video": burned_path},
+                        fresh=True,
                     ),
                 )
                 metadata_path = candidate_dir / "youtube-metadata.json"
                 excerpt = self._transcript_excerpt(transcript, candidate)
                 await self._run_stage(
                     job,
-                    "metadata_generation",
+                    PipelineStage.GENERATE_METADATA.value,
                     lambda candidate=candidate,
                     excerpt=excerpt,
                     metadata_path=metadata_path: self.publish_engine.generate(
@@ -545,6 +644,41 @@ class JobService:
                         summary=candidate.summary,
                         transcript_excerpt=excerpt,
                         destination=metadata_path,
+                    ),
+                )
+                stage_manifest = self._append_stage_record(
+                    render_dir=candidate_dir,
+                    manifest=stage_manifest,
+                    record=StageRecord(
+                        stage=PipelineStage.GENERATE_METADATA,
+                        status=StageStatus.COMPLETED,
+                        resume_strategy="reuse generated metadata",
+                        artifacts={"youtube_metadata": metadata_path},
+                        fresh=True,
+                    ),
+                )
+                await self._run_stage(
+                    job,
+                    PipelineStage.VALIDATE_RENDER.value,
+                    lambda candidate_dir=candidate_dir,
+                    selected_segments=selected_segments,
+                    subtitle_items=subtitle_items: asyncio.to_thread(
+                        self.render_validator.validate,
+                        render_dir=candidate_dir,
+                        expected_segments=selected_segments,
+                        subtitle_items=subtitle_items,
+                    ),
+                )
+                self._append_stage_record(
+                    render_dir=candidate_dir,
+                    manifest=stage_manifest,
+                    record=StageRecord(
+                        stage=PipelineStage.VALIDATE_RENDER,
+                        status=StageStatus.COMPLETED,
+                        resume_strategy=(
+                            "render is publishable; reuse ready render by default"
+                        ),
+                        fresh=True,
                     ),
                 )
                 render = self.video_store.write_render(
@@ -577,6 +711,27 @@ class JobService:
                     candidate_id,
                 )
                 error = self._as_job_error(exc, "rendering")
+                failed_stage = getattr(exc, "stage", None) or "rendering"
+                stage_manifest = self._load_stage_manifest(
+                    render_dir=candidate_dir,
+                    job_id=job.job_id,
+                    render_id=batch.render_id,
+                    candidate_id=candidate_id,
+                )
+                self._append_stage_record(
+                    render_dir=candidate_dir,
+                    manifest=stage_manifest,
+                    record=StageRecord(
+                        stage=(
+                            PipelineStage(failed_stage)
+                            if failed_stage in {stage.value for stage in PipelineStage}
+                            else PipelineStage.VALIDATE_RENDER
+                        ),
+                        status=StageStatus.FAILED,
+                        resume_strategy=f"rerun render to resume from {failed_stage}",
+                        error=error,
+                    ),
+                )
                 log_task_failure(job, error)
                 self.video_store.write_render(
                     video_id=job.video_id,
@@ -925,8 +1080,25 @@ class JobService:
         log_task_stage(job, stage, "started")
         try:
             result = await operation()
-        except Exception:
+        except InsightCastError as exc:
             elapsed_seconds = perf_counter() - started_at
+            if exc.stage is None:
+                exc.stage = stage
+            logger.error(
+                "stage_failed stage=%s elapsed_seconds=%.3f",
+                stage,
+                elapsed_seconds,
+            )
+            log_task_stage(
+                job,
+                stage,
+                "failed",
+                elapsed_seconds=elapsed_seconds,
+            )
+            raise
+        except Exception as exc:
+            elapsed_seconds = perf_counter() - started_at
+            exc.stage = stage  # type: ignore[attr-defined]
             logger.error(
                 "stage_failed stage=%s elapsed_seconds=%.3f",
                 stage,
@@ -952,6 +1124,36 @@ class JobService:
             elapsed_seconds=elapsed_seconds,
         )
         return result
+
+    def _stage_manifest_path(self, render_dir: Path) -> Path:
+        return render_dir / "stage-manifest.json"
+
+    def _load_stage_manifest(
+        self,
+        *,
+        render_dir: Path,
+        job_id: str,
+        render_id: str,
+        candidate_id: str | None,
+    ) -> StageManifest:
+        return self.stage_store.read_optional(
+            self._stage_manifest_path(render_dir)
+        ) or StageManifest(
+            operation_id=job_id,
+            render_id=render_id,
+            candidate_id=candidate_id,
+        )
+
+    def _append_stage_record(
+        self,
+        *,
+        render_dir: Path,
+        manifest: StageManifest,
+        record: StageRecord,
+    ) -> StageManifest:
+        manifest.stages.append(record)
+        self.stage_store.write(self._stage_manifest_path(render_dir), manifest)
+        return manifest
 
     def _finalize_provisional_output(
         self,
@@ -1047,15 +1249,16 @@ class JobService:
 
     @staticmethod
     def _as_job_error(exc: Exception, stage: str | None) -> JobError:
+        resolved_stage = getattr(exc, "stage", None) or stage
         if isinstance(exc, InsightCastError):
             return JobError(
-                stage=exc.stage or stage,
+                stage=resolved_stage,
                 error_code=exc.error_code,
                 message=exc.message,
                 details=exc.details,
             )
         return JobError(
-            stage=stage,
+            stage=resolved_stage,
             error_code=ErrorCode.VIDEO_RENDER_FAILED,
             message="Candidate rendering failed.",
             details={"reason": str(exc)},

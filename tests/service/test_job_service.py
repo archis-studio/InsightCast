@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -22,6 +23,7 @@ from insightcast.engines.curator_engine import (
     TopicDiscoveryOutput,
     TopicDiscoveryResponse,
 )
+from insightcast.engines.lingo_engine import SubtitleItem
 from insightcast.engines.publish_engine import GeneratedYouTubeMetadata
 from insightcast.engines.source_engine import SourceResult
 from insightcast.infrastructure.ytdlp_client import YouTubeMetadata
@@ -216,6 +218,65 @@ class FakeClip:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.fail_candidates: set[str] = set()
+
+    async def cut_clip(
+        self,
+        source_video: Path,
+        selection: Candidate,
+        work_dir: Path,
+    ) -> Path:
+        self.calls.append(selection.candidate_id)
+        work_dir.mkdir(parents=True, exist_ok=True)
+        temporary_clip = work_dir / f"{selection.candidate_id}.unburned.mp4"
+        temporary_clip.write_bytes(b"temporary")
+        return temporary_clip
+
+    async def translate_subtitles(
+        self,
+        transcript_segments: list[TranscriptSegment],
+        selection: Candidate,
+    ) -> list[SubtitleItem]:
+        return [
+            SubtitleItem(
+                segment_id=segment.segment_id,
+                start_seconds=max(segment.start_seconds, selection.start_seconds)
+                - selection.start_seconds,
+                end_seconds=min(segment.end_seconds, selection.end_seconds)
+                - selection.start_seconds,
+                english_text=segment.text,
+                traditional_chinese_text="翻譯",
+            )
+            for segment in transcript_segments
+            if segment.end_seconds > selection.start_seconds
+            and segment.start_seconds < selection.end_seconds
+        ]
+
+    def write_subtitles(
+        self,
+        subtitle_items: list[SubtitleItem],
+        selection: Candidate,
+        output_dir: Path,
+    ) -> tuple[Path, Path]:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        srt = output_dir / "subtitles.zh-TW.srt"
+        ass = output_dir / "subtitles.bilingual.ass"
+        srt.write_text("srt", encoding="utf-8")
+        ass.write_text("ass", encoding="utf-8")
+        return srt, ass
+
+    async def burn_subtitles(
+        self,
+        temporary_clip: Path,
+        ass_path: Path,
+        output_dir: Path,
+    ) -> Path:
+        candidate_id = temporary_clip.name.removesuffix(".unburned.mp4")
+        if candidate_id in self.fail_candidates:
+            raise InsightCastError(ErrorCode.VIDEO_RENDER_FAILED, "render failed")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        burned = output_dir / "video.mp4"
+        burned.write_bytes(b"video")
+        return burned
 
     async def render(self, **kwargs: object) -> ClipArtifacts:
         selection = kwargs["selection"]
@@ -621,6 +682,7 @@ async def test_candidate_render_is_nested_under_original_candidate_letter(
         "subtitles.zh-TW.srt",
         "subtitles.bilingual.ass",
         "youtube-metadata.json",
+        "stage-manifest.json",
     }
 
 
@@ -652,6 +714,29 @@ async def test_partial_render_failure_keeps_success_and_can_retry_failed_candida
 
 
 @pytest.mark.asyncio
+async def test_failed_candidate_render_writes_failed_stage_manifest(tmp_path: Path) -> None:
+    service, _, clip = make_service(tmp_path)
+    job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+    await service.process(await service.queue.get())
+    clip.fail_candidates = {"A"}
+
+    batch = await service.create_render(
+        job.job_id,
+        CandidateSelectionRequest(candidate_ids="A"),
+    )
+    await service.process(await service.queue.get())
+
+    stage_manifest_path = batch.output_dir / "stage-manifest.json"
+    payload = json.loads(stage_manifest_path.read_text(encoding="utf-8"))
+    assert payload["stages"][-1]["stage"] == "burn_subtitles"
+    assert payload["stages"][-1]["status"] == "failed"
+    assert payload["stages"][-1]["error"]["error_code"] == "VIDEO_RENDER_FAILED"
+    assert payload["stages"][-1]["resume_strategy"] == (
+        "rerun render to resume from burn_subtitles"
+    )
+
+
+@pytest.mark.asyncio
 async def test_render_reports_removed_source_artifact(tmp_path: Path) -> None:
     service, _, clip = make_service(tmp_path)
     job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
@@ -672,6 +757,32 @@ async def test_render_reports_removed_source_artifact(tmp_path: Path) -> None:
         == ErrorCode.SOURCE_CACHE_MISSING
     )
     assert clip.calls == []
+
+
+@pytest.mark.asyncio
+async def test_candidate_render_writes_stage_manifest(tmp_path: Path) -> None:
+    service, _, _ = make_service(tmp_path)
+    job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+    await service.process(await service.queue.get())
+
+    batch = await service.create_render(
+        job.job_id,
+        CandidateSelectionRequest(candidate_ids="A", force_render=True),
+    )
+    await service.process(await service.queue.get())
+
+    stage_manifest_path = batch.output_dir / "stage-manifest.json"
+    assert stage_manifest_path.is_file()
+    payload = json.loads(stage_manifest_path.read_text(encoding="utf-8"))
+    assert [stage["stage"] for stage in payload["stages"]] == [
+        "cut_clip",
+        "translate_subtitles",
+        "write_subtitles",
+        "burn_subtitles",
+        "generate_metadata",
+        "validate_render",
+    ]
+    assert all(stage["status"] == "completed" for stage in payload["stages"])
 
 
 @pytest.mark.asyncio
@@ -891,7 +1002,7 @@ async def test_failed_candidate_render_emits_structured_task_failure(
     messages = [record.getMessage() for record in caplog.records]
     assert (
         f"task job_id={job.job_id} type=ANALYSIS event=failed "
-        "error_code=VIDEO_RENDER_FAILED stage=rendering"
+        "error_code=VIDEO_RENDER_FAILED stage=burn_subtitles"
     ) in messages
 
 
@@ -961,8 +1072,12 @@ async def test_pipeline_log_records_analysis_and_render_stage_timings(
         "transcription",
         "topic_discovery",
         "candidate_boundary_selection",
-        "candidate_clip_render",
-        "metadata_generation",
+        "cut_clip",
+        "translate_subtitles",
+        "write_subtitles",
+        "burn_subtitles",
+        "generate_metadata",
+        "validate_render",
     ):
         assert f"stage_started stage={stage}" in log
         assert f"stage_completed stage={stage}" in log
