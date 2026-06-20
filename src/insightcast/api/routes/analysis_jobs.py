@@ -20,6 +20,7 @@ from insightcast.domain.models import (
     CandidateSelectionRequest,
     RenderBatch,
 )
+from insightcast.domain.stages import StageManifest
 
 router = APIRouter(prefix="/api/v1/analysis-jobs", tags=["analysis"])
 ERROR_RESPONSES = {
@@ -38,6 +39,26 @@ def _render_artifacts(batch: RenderBatch) -> dict[str, Any]:
         }
         for candidate_id, result in batch.candidate_results.items()
         if result.artifacts is not None
+    }
+
+
+def _render_batch_item(batch: RenderBatch) -> dict[str, Any]:
+    stage_path = batch.output_dir / "stage-manifest.json"
+    stages = []
+    if stage_path.is_file():
+        stages = StageManifest.model_validate_json(
+            stage_path.read_text(encoding="utf-8")
+        ).stages
+    return {
+        "render_id": batch.render_id,
+        "candidate_ids": batch.candidate_ids,
+        "status": batch.status,
+        "message": batch.message,
+        "output_dir": batch.output_dir,
+        "candidate_results": batch.candidate_results,
+        "stages": stages,
+        "created_at": batch.created_at,
+        "updated_at": batch.updated_at,
     }
 
 
@@ -188,5 +209,5 @@ async def list_renders(
             for batch in batches
             if _render_artifacts(batch)
         },
-        render_batches=batches,
+        render_batches=[_render_batch_item(batch) for batch in batches],
     )

@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from insightcast.domain.enums import ErrorCode, JobStatus
 from insightcast.domain.models import Candidate, JobError, RenderBatch
+from insightcast.domain.stages import StageRecord
 from insightcast.storage.manifests import AnalysisState, PublishState, RenderKind, RenderState
 from insightcast.utils.timecode import parse_timecode
 
@@ -146,12 +147,24 @@ class RenderBatchResponse(ApiModel):
     updated_at: datetime
 
 
+class RenderBatchItem(ApiModel):
+    render_id: str
+    candidate_ids: list[str]
+    status: JobStatus
+    message: str
+    output_dir: Path
+    candidate_results: dict[str, Any]
+    stages: list[StageRecord] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
 class RenderBatchListResponse(ApiModel):
     job_id: str
     status: str = "ok"
     message: str
     artifacts: dict[str, Any]
-    render_batches: list[RenderBatch]
+    render_batches: list[RenderBatchItem]
 
 
 class DirectRenderJobResponse(ApiModel):

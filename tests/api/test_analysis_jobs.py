@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -22,6 +23,7 @@ class FakeService:
         self.tmp_path = tmp_path
         self.created: list[dict[str, object]] = []
         self.render_requests: list[object] = []
+        self.render_batches: list[RenderBatch] = []
 
     async def process(self, _item: object) -> None:
         return None
@@ -74,7 +76,7 @@ class FakeService:
         )
 
     def list_render_batches(self, _job_id: str) -> list[RenderBatch]:
-        return []
+        return self.render_batches
 
 
 def make_client(
@@ -134,6 +136,54 @@ def test_analysis_routes_queue_get_render_and_list(tmp_path: Path) -> None:
     assert render.status_code == 202
     assert render.json()["render_id"] == "render-1"
     assert batches.json()["render_batches"] == []
+
+
+def test_render_batch_response_includes_stage_manifest(tmp_path: Path) -> None:
+    client, service = make_client(tmp_path)
+    batch = RenderBatch(
+        render_id="render-1",
+        candidate_ids=["A"],
+        status=JobStatus.COMPLETED,
+        message="All selected candidates rendered successfully.",
+        output_dir=(tmp_path / "analysis" / "render").resolve(),
+        created_at=datetime(2026, 6, 6, tzinfo=UTC),
+        updated_at=datetime(2026, 6, 6, tzinfo=UTC),
+    )
+    batch.output_dir.mkdir(parents=True)
+    (batch.output_dir / "stage-manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "operation_id": "analysis-1",
+                "render_id": "render-1",
+                "candidate_id": "A",
+                "stages": [
+                    {
+                        "stage": "validate_render",
+                        "status": "completed",
+                        "started_at": None,
+                        "completed_at": None,
+                        "elapsed_seconds": None,
+                        "artifacts": {},
+                        "resume_strategy": "render is publishable",
+                        "fresh": False,
+                        "reused": True,
+                        "warnings": [],
+                        "error": None,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service.render_batches = [batch]
+
+    with client:
+        response = client.get("/api/v1/analysis-jobs/analysis-1/renders")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["render_batches"][0]["stages"][0]["stage"] == "validate_render"
 
 
 def test_analysis_route_passes_force_render_flags_to_service(tmp_path: Path) -> None:
