@@ -63,6 +63,7 @@ def _build_runtime(settings: Settings) -> tuple[JobService, FfmpegClient]:
         sdk,
         timeout_seconds=settings.openai_timeout_seconds,
         max_retries=settings.openai_max_retries,
+        retry_sleep_seconds=settings.openai_retry_sleep_seconds,
     )
     if settings.transcription_provider == "local":
         transcription = LocalWhisperClient(
@@ -74,6 +75,8 @@ def _build_runtime(settings: Settings) -> tuple[JobService, FfmpegClient]:
             sdk.audio.transcriptions,
             model=settings.openai_transcription_model,
             max_upload_mb=settings.openai_transcription_max_upload_mb,
+            max_attempts=settings.openai_transcription_max_attempts,
+            retry_sleep_seconds=settings.openai_transcription_retry_sleep_seconds,
         )
     writer = FileJobWriter()
     video_store = VideoStore(settings.output_dir, writer)

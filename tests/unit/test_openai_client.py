@@ -25,6 +25,14 @@ class FakeResponses:
         return SimpleNamespace(output_parsed=outcome)
 
 
+class FakeSleeper:
+    def __init__(self) -> None:
+        self.sleeps: list[float] = []
+
+    async def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+
+
 @pytest.mark.asyncio
 async def test_structured_response_transports_model_prompts_schema_and_timeout() -> None:
     responses = FakeResponses([ResultModel(value="ok")])
@@ -71,6 +79,30 @@ async def test_structured_response_retries_then_returns_valid_result() -> None:
 
 
 @pytest.mark.asyncio
+async def test_structured_response_sleeps_between_retry_attempts() -> None:
+    responses = FakeResponses([RuntimeError("temporary"), ResultModel(value="recovered")])
+    sleeper = FakeSleeper()
+    client = StructuredOpenAIClient(
+        SimpleNamespace(responses=responses),
+        timeout_seconds=30,
+        max_retries=1,
+        retry_sleep_seconds=4.5,
+        sleep=sleeper.sleep,
+    )
+
+    result = await client.parse(
+        model="gpt-test",
+        system_prompt="system",
+        user_prompt="user",
+        response_model=ResultModel,
+    )
+
+    assert result.value == "recovered"
+    assert sleeper.sleeps == [4.5]
+    assert len(responses.calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_structured_response_failure_is_converted_without_prompt_contents() -> None:
     responses = FakeResponses([RuntimeError("secret transport details")])
     client = StructuredOpenAIClient(
@@ -89,4 +121,3 @@ async def test_structured_response_failure_is_converted_without_prompt_contents(
 
     assert exc_info.value.error_code == ErrorCode.LLM_REQUEST_FAILED
     assert exc_info.value.details == {"model": "gpt-test", "reason": "secret transport details"}
-

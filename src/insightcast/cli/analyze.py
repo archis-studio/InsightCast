@@ -339,6 +339,7 @@ def run_analysis(
     youtube_url: str,
     *,
     verbose: bool,
+    force_reanalyze: bool = False,
     settings: Settings,
     requester: Requester = default_requester,
     sleep: Callable[[float], None] = time.sleep,
@@ -369,7 +370,10 @@ def run_analysis(
             requester,
             "POST",
             f"{settings.api_base_url}/api/v1/analysis-jobs",
-            {"youtube_url": youtube_url},
+            {
+                "youtube_url": youtube_url,
+                **({"force_reanalyze": True} if force_reanalyze else {}),
+            },
         )
         job_id = _required_string(created, "job_id")
         created_status = _required_string(created, "status")
@@ -460,6 +464,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print the complete JSON response after each successful API request",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="create a new analysis job instead of reusing the latest one for the URL",
+    )
     return parser
 
 
@@ -470,4 +479,9 @@ def main(argv: list[str] | None = None) -> int:
     except ValidationError as exc:
         print(f"Invalid local configuration:\n{exc}", file=sys.stderr)
         return 2
-    return run_analysis(args.youtube_url, verbose=args.verbose, settings=settings)
+    return run_analysis(
+        args.youtube_url,
+        verbose=args.verbose,
+        force_reanalyze=args.force,
+        settings=settings,
+    )

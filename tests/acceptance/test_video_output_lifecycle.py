@@ -16,6 +16,7 @@ from insightcast.engines.curator_engine import (
     TopicDiscoveryOutput,
     TopicDiscoveryResponse,
 )
+from insightcast.engines.lingo_engine import SubtitleItem
 from insightcast.engines.publish_engine import GeneratedYouTubeMetadata
 from insightcast.engines.source_engine import SourceResult
 from insightcast.infrastructure.ytdlp_client import YouTubeMetadata
@@ -159,6 +160,61 @@ class FakeCurator:
 
 
 class FakeClip:
+    async def cut_clip(
+        self,
+        _source_video: Path,
+        selection: Candidate,
+        work_dir: Path,
+    ) -> Path:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        temporary_clip = work_dir / f"{selection.candidate_id}.unburned.mp4"
+        temporary_clip.write_bytes(b"temporary")
+        return temporary_clip
+
+    async def translate_subtitles(
+        self,
+        transcript_segments: list[TranscriptSegment],
+        selection: Candidate,
+    ) -> list[SubtitleItem]:
+        return [
+            SubtitleItem(
+                segment_id=segment.segment_id,
+                start_seconds=max(segment.start_seconds, selection.start_seconds)
+                - selection.start_seconds,
+                end_seconds=min(segment.end_seconds, selection.end_seconds)
+                - selection.start_seconds,
+                english_text=segment.text,
+                traditional_chinese_text="翻譯",
+            )
+            for segment in transcript_segments
+            if segment.end_seconds > selection.start_seconds
+            and segment.start_seconds < selection.end_seconds
+        ]
+
+    def write_subtitles(
+        self,
+        _subtitle_items: list[SubtitleItem],
+        _selection: Candidate,
+        output_dir: Path,
+    ) -> tuple[Path, Path]:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        srt = output_dir / "subtitles.zh-TW.srt"
+        ass = output_dir / "subtitles.bilingual.ass"
+        srt.write_text("srt", encoding="utf-8")
+        ass.write_text("ass", encoding="utf-8")
+        return srt, ass
+
+    async def burn_subtitles(
+        self,
+        _temporary_clip: Path,
+        _ass_path: Path,
+        output_dir: Path,
+    ) -> Path:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        burned = output_dir / "video.mp4"
+        burned.write_bytes(b"video")
+        return burned
+
     async def render(self, **kwargs: object) -> ClipArtifacts:
         output_dir = Path(kwargs["output_dir"])
         output_dir.mkdir(parents=True, exist_ok=True)

@@ -10,11 +10,13 @@ from uuid import uuid4
 
 from insightcast.core.exceptions import InsightCastError
 from insightcast.core.logging import (
+    format_log_fields,
     get_job_log_path,
     get_job_logger,
     log_task_failure,
     log_task_stage,
     log_task_status,
+    log_task_transcription_progress,
 )
 from insightcast.domain.enums import ErrorCode, JobStatus, JobType
 from insightcast.domain.models import (
@@ -33,6 +35,9 @@ from insightcast.engines.render_validator import RenderValidator
 from insightcast.infrastructure.transcription.base import (
     TranscriptionSpec,
     build_transcript_cache_key,
+)
+from insightcast.infrastructure.transcription.openai_transcription_client import (
+    capture_transcription_progress,
 )
 from insightcast.storage.file_job_writer import FileJobWriter
 from insightcast.storage.manifests import (
@@ -124,7 +129,9 @@ class JobService:
     ) -> AnalysisJob:
         normalized_url = normalize_youtube_url(youtube_url)
         if not force_reanalyze and normalized_url in self.latest_analysis_by_url:
-            return self.analysis_jobs[self.latest_analysis_by_url[normalized_url]]
+            latest_job = self.analysis_jobs[self.latest_analysis_by_url[normalized_url]]
+            if latest_job.status is not JobStatus.FAILED:
+                return latest_job
         job_id = self.id_factory()
         created_at = self.clock()
         analysis_id = build_run_id(created_at, job_id)
@@ -1000,9 +1007,7 @@ class JobService:
             transcript = await self._run_stage(
                 job,
                 "transcription",
-                lambda: self.transcription_client.transcribe(
-                    source.source_artifacts.source_audio
-                ),
+                lambda: self._transcribe_with_progress_logging(job, source),
             )
             entry = await asyncio.to_thread(
                 store.write_transcript,
@@ -1020,6 +1025,26 @@ class JobService:
             entry.manifest.cache_key,
         )
         return entry.transcript
+
+    async def _transcribe_with_progress_logging(
+        self,
+        job: AnalysisJob | DirectRenderJob,
+        source: Any,
+    ) -> Transcript:
+        logger = get_job_logger(job.job_id, job.output_dir)
+
+        def emit_progress(fields: dict[str, Any]) -> None:
+            enriched = {
+                "video_id": source.metadata.video_id,
+                **fields,
+            }
+            logger.info("transcription_progress %s", format_log_fields(enriched))
+            log_task_transcription_progress(job, enriched)
+
+        with capture_transcription_progress(emit_progress):
+            return await self.transcription_client.transcribe(
+                source.source_artifacts.source_audio
+            )
 
     @staticmethod
     def _use_cached_transcript(

@@ -26,6 +26,9 @@ from insightcast.engines.curator_engine import (
 from insightcast.engines.lingo_engine import SubtitleItem
 from insightcast.engines.publish_engine import GeneratedYouTubeMetadata
 from insightcast.engines.source_engine import SourceResult
+from insightcast.infrastructure.transcription.openai_transcription_client import (
+    emit_transcription_progress,
+)
 from insightcast.infrastructure.ytdlp_client import YouTubeMetadata
 from insightcast.services.job_service import JobService, WorkKind
 from insightcast.storage.file_job_writer import FileJobWriter
@@ -135,6 +138,30 @@ class FakeTranscriber:
                 )
             ],
         )
+
+
+class ProgressFakeTranscriber(FakeTranscriber):
+    async def transcribe(self, _path: Path) -> Transcript:
+        emit_transcription_progress(
+            "planned",
+            chunk_count=2,
+            max_upload_mb=8,
+            total_chunk_bytes=1600,
+        )
+        emit_transcription_progress(
+            "completed",
+            chunk_index=0,
+            attempt=1,
+            processed_chunks=1,
+            chunk_count=2,
+        )
+        emit_transcription_progress(
+            "completed_all",
+            processed_chunks=2,
+            chunk_count=2,
+            segment_count=1,
+        )
+        return await super().transcribe(_path)
 
 
 def discovered_topic(
@@ -402,6 +429,35 @@ async def test_failed_analysis_after_transcript_retains_failed_manifest(
     assert manifest.error is not None
     assert manifest.error.error_code is ErrorCode.INSUFFICIENT_CANDIDATES
     assert manifest.log_path == Path(f"logs/{job.job_id}.log")
+
+
+@pytest.mark.asyncio
+async def test_failed_analysis_does_not_block_new_analysis_for_same_url(
+    tmp_path: Path,
+) -> None:
+    service = JobService(
+        output_root=tmp_path / "outputs",
+        work_root=tmp_path / ".work",
+        source_engine=FakeSource(),
+        transcription_client=FakeTranscriber(),
+        curator_engine=FailingCurator(),
+        clip_engine=FakeClip(),
+        publish_engine=FakePublish(),
+        writer=FileJobWriter(),
+        clock=Clock(),
+        id_factory=IdFactory(),
+    )
+    first = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+
+    await service.process(await service.queue.get())
+    second = await service.create_analysis_job(
+        "https://www.youtube.com/watch?v=abc123DEF_-"
+    )
+
+    assert first.status is JobStatus.FAILED
+    assert second.job_id != first.job_id
+    assert second.status is JobStatus.QUEUED
+    assert service.queue.qsize() == 1
 
 
 @pytest.mark.asyncio
@@ -1080,7 +1136,7 @@ async def test_pipeline_log_records_analysis_and_render_stage_timings(
         output_root=tmp_path / "outputs",
         work_root=tmp_path / ".work",
         source_engine=FakeSource(),
-        transcription_client=FakeTranscriber(),
+        transcription_client=ProgressFakeTranscriber(),
         curator_engine=FakeCurator(),
         clip_engine=FakeClip(),
         publish_engine=FakePublish(),
@@ -1098,6 +1154,10 @@ async def test_pipeline_log_records_analysis_and_render_stage_timings(
 
     log = get_job_log_path(job.job_id, job.output_dir).read_text(encoding="utf-8")
     assert "source_cache_miss" in log
+    assert "transcription_progress video_id='abc123DEF_-' event='planned'" in log
+    assert "transcription_progress video_id='abc123DEF_-' event='completed'" in log
+    assert "processed_chunks=2" in log
+    assert "chunk_count=2" in log
     for stage in (
         "source_ingestion",
         "transcription",
@@ -1114,3 +1174,37 @@ async def test_pipeline_log_records_analysis_and_render_stage_timings(
         assert f"stage_completed stage={stage}" in log
     assert "stage_started stage=candidate_curation" not in log
     assert "elapsed_seconds=" in log
+
+
+@pytest.mark.asyncio
+async def test_transcription_progress_is_emitted_to_task_log(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service = JobService(
+        output_root=tmp_path / "outputs",
+        work_root=tmp_path / ".work",
+        source_engine=FakeSource(),
+        transcription_client=ProgressFakeTranscriber(),
+        curator_engine=FakeCurator(),
+        clip_engine=FakeClip(),
+        publish_engine=FakePublish(),
+        writer=FileJobWriter(),
+        clock=Clock(),
+        id_factory=IdFactory(),
+    )
+    job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+
+    with caplog.at_level(logging.INFO, logger="insightcast.task"):
+        await service.process(await service.queue.get())
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        f"transcription_progress job_id={job.job_id} type=ANALYSIS "
+        "stage=transcription video_id='abc123DEF_-' event='planned'" in message
+        for message in messages
+    )
+    assert any(
+        "event='completed_all'" in message and "processed_chunks=2" in message
+        for message in messages
+    )

@@ -256,6 +256,39 @@ def test_posts_only_youtube_url() -> None:
     ) in output
 
 
+def test_force_posts_reanalysis_request() -> None:
+    requester = ScriptedRequester(
+        [
+            healthy_response(),
+            queued_response(),
+            job_response("WAITING_SELECTION", "Candidates are ready."),
+        ]
+    )
+    stdout = StringIO()
+    stderr = StringIO()
+
+    code = run_analysis(
+        YOUTUBE_URL,
+        verbose=False,
+        force_reanalyze=True,
+        settings=settings(),
+        requester=requester,
+        sleep=lambda _: None,
+        monotonic=lambda: 0.0,
+        now=lambda: datetime(2026, 6, 7, 12, 0, 0),
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert code == 0
+    assert requester.requests[1] == (
+        "POST",
+        f"{API_BASE_URL}/api/v1/analysis-jobs",
+        {"youtube_url": YOUTUBE_URL, "force_reanalyze": True},
+    )
+    assert stderr.getvalue() == ""
+
+
 def test_polls_immediately_then_uses_configured_interval_and_prints_heartbeats() -> None:
     clock = FakeClock()
     requester = ScriptedRequester(

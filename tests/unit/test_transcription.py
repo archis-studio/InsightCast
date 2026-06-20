@@ -13,6 +13,7 @@ from insightcast.infrastructure.transcription.base import (
 from insightcast.infrastructure.transcription.local_whisper_client import LocalWhisperClient
 from insightcast.infrastructure.transcription.openai_transcription_client import (
     OpenAITranscriptionClient,
+    capture_transcription_progress,
 )
 
 
@@ -24,7 +25,10 @@ class FakeTranscriptions:
     def create(self, **kwargs: object) -> object:
         file_object = kwargs["file"]
         self.calls.append({**kwargs, "file": Path(file_object.name).name})
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
 
 def test_transcript_cache_key_changes_for_identity_inputs() -> None:
@@ -128,6 +132,141 @@ async def test_openai_transcription_rejects_non_english_audio(tmp_path: Path) ->
         await client.transcribe(tmp_path / "audio.mp3")
 
     assert exc_info.value.error_code == ErrorCode.UNSUPPORTED_LANGUAGE
+
+
+@pytest.mark.asyncio
+async def test_openai_transcription_retries_failed_chunk(tmp_path: Path) -> None:
+    chunk = tmp_path / "part.mp3"
+    chunk.write_bytes(b"audio")
+    transcriptions = FakeTranscriptions(
+        [
+            TimeoutError("Request timed out."),
+            SimpleNamespace(
+                language="en",
+                duration=4,
+                segments=[SimpleNamespace(id=0, start=1, end=2, text="Recovered")],
+            ),
+        ]
+    )
+    client = OpenAITranscriptionClient(
+        transcriptions,
+        max_attempts=2,
+        chunker=lambda *_: [AudioChunk(path=chunk, offset_seconds=0)],
+    )
+
+    transcript = await client.transcribe(tmp_path / "audio.mp3")
+
+    assert [call["file"] for call in transcriptions.calls] == ["part.mp3", "part.mp3"]
+    assert transcript.segments[0].text == "Recovered"
+
+
+@pytest.mark.asyncio
+async def test_openai_transcription_resumes_from_completed_chunk_checkpoint(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "part-1.mp3"
+    second = tmp_path / "part-2.mp3"
+    first.write_bytes(b"one")
+    second.write_bytes(b"two")
+
+    def chunker(path: Path, max_upload_mb: int) -> list[AudioChunk]:
+        return [
+            AudioChunk(path=first, offset_seconds=0),
+            AudioChunk(path=second, offset_seconds=10),
+        ]
+
+    checkpoint_root = tmp_path / "checkpoints"
+    first_run = OpenAITranscriptionClient(
+        FakeTranscriptions(
+            [
+                SimpleNamespace(
+                    language="en",
+                    duration=6,
+                    segments=[SimpleNamespace(id=0, start=1, end=2, text="First")],
+                ),
+                TimeoutError("Request timed out."),
+            ]
+        ),
+        max_attempts=1,
+        checkpoint_root=checkpoint_root,
+        chunker=chunker,
+    )
+
+    with pytest.raises(InsightCastError) as exc_info:
+        await first_run.transcribe(tmp_path / "audio.mp3")
+
+    assert exc_info.value.error_code == ErrorCode.TRANSCRIPTION_FAILED
+    assert exc_info.value.details["chunk_index"] == 1
+    assert Path(str(exc_info.value.details["resume_checkpoint"])).exists() is False
+
+    second_transcriptions = FakeTranscriptions(
+        [
+            SimpleNamespace(
+                language="en",
+                duration=5,
+                segments=[SimpleNamespace(id=0, start=0.5, end=1.5, text="Second")],
+            ),
+        ]
+    )
+    second_run = OpenAITranscriptionClient(
+        second_transcriptions,
+        max_attempts=1,
+        checkpoint_root=checkpoint_root,
+        chunker=chunker,
+    )
+
+    transcript = await second_run.transcribe(tmp_path / "audio.mp3")
+
+    assert [call["file"] for call in second_transcriptions.calls] == ["part-2.mp3"]
+    assert [(item.start_seconds, item.end_seconds, item.text) for item in transcript.segments] == [
+        (1, 2, "First"),
+        (10.5, 11.5, "Second"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_openai_transcription_emits_machine_readable_progress_events(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "part-1.mp3"
+    second = tmp_path / "part-2.mp3"
+    first.write_bytes(b"one")
+    second.write_bytes(b"two")
+    transcriptions = FakeTranscriptions(
+        [
+            TimeoutError("Request timed out."),
+            SimpleNamespace(language="en", duration=2, segments=[]),
+            SimpleNamespace(language="en", duration=3, segments=[]),
+        ]
+    )
+    events: list[dict[str, object]] = []
+    client = OpenAITranscriptionClient(
+        transcriptions,
+        max_attempts=2,
+        chunker=lambda *_: [
+            AudioChunk(path=first, offset_seconds=0),
+            AudioChunk(path=second, offset_seconds=10),
+        ],
+    )
+
+    with capture_transcription_progress(events.append):
+        await client.transcribe(tmp_path / "audio.mp3")
+
+    assert [
+        (event["event"], event.get("chunk_index"), event.get("attempt"))
+        for event in events
+    ] == [
+        ("planned", None, None),
+        ("started", 0, 1),
+        ("failed", 0, 1),
+        ("started", 0, 2),
+        ("completed", 0, 2),
+        ("started", 1, 1),
+        ("completed", 1, 1),
+        ("completed_all", None, None),
+    ]
+    assert events[0]["chunk_count"] == 2
+    assert events[-1]["processed_chunks"] == 2
 
 
 @pytest.mark.asyncio

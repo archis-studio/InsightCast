@@ -31,7 +31,9 @@ class Settings(BaseSettings):
 
     transcription_provider: Literal["openai", "local"] = "openai"
     openai_transcription_model: str = "whisper-1"
-    openai_transcription_max_upload_mb: int = Field(default=24, ge=1, le=25)
+    openai_transcription_max_upload_mb: int = Field(default=8, ge=1, le=25)
+    openai_transcription_max_attempts: int = Field(default=3, ge=1, le=10)
+    openai_transcription_retry_sleep_seconds: float = Field(default=0, ge=0)
     whisper_model_size: str = "large-v3"
     whisper_device: str = "auto"
 
@@ -41,6 +43,7 @@ class Settings(BaseSettings):
     video_crf: int = Field(default=18, ge=0, le=51)
     openai_timeout_seconds: float = Field(default=120, gt=0)
     openai_max_retries: int = Field(default=2, ge=0, le=10)
+    openai_retry_sleep_seconds: float = Field(default=10, ge=0)
     default_candidate_count: int = Field(default=2, ge=1, le=26)
     default_min_duration_minutes: float = Field(default=8, gt=0)
     default_max_duration_minutes: float = Field(default=12, gt=0)

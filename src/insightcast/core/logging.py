@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import Any
 
 from insightcast.domain.models import BaseJob, JobError
 
@@ -66,6 +67,25 @@ def log_task_stage(
         args += (elapsed_seconds,)
     log = _TASK_LOGGER.error if event == "failed" else _TASK_LOGGER.info
     log(message, *args)
+
+
+def format_log_fields(fields: dict[str, Any]) -> str:
+    return " ".join(
+        f"{key}={value!r}" if isinstance(value, str) else f"{key}={value}"
+        for key, value in fields.items()
+        if value is not None
+    )
+
+
+def log_task_transcription_progress(job: BaseJob, fields: dict[str, Any]) -> None:
+    event = str(fields.get("event", "unknown"))
+    log = _TASK_LOGGER.warning if event == "failed" else _TASK_LOGGER.info
+    log(
+        "transcription_progress job_id=%s type=%s stage=transcription %s",
+        job.job_id,
+        job.job_type,
+        format_log_fields(fields),
+    )
 
 
 def log_task_failure(job: BaseJob, error: JobError) -> None:

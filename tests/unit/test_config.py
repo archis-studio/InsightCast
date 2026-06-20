@@ -65,6 +65,10 @@ def test_analysis_cli_settings_have_defaults() -> None:
     assert settings.api_base_url == "http://127.0.0.1:8765"
     assert settings.analyze_poll_interval_seconds == 30
     assert settings.ytdlp_js_runtime == "node"
+    assert settings.openai_transcription_max_upload_mb == 8
+    assert settings.openai_transcription_max_attempts == 3
+    assert settings.openai_transcription_retry_sleep_seconds == 0
+    assert settings.openai_retry_sleep_seconds == 10
 
 
 def test_analysis_cli_settings_load_environment_overrides(
@@ -73,12 +77,18 @@ def test_analysis_cli_settings_load_environment_overrides(
     monkeypatch.setenv("API_BASE_URL", "https://api.example.test/base/")
     monkeypatch.setenv("ANALYZE_POLL_INTERVAL_SECONDS", "2.5")
     monkeypatch.setenv("YTDLP_JS_RUNTIME", "bun")
+    monkeypatch.setenv("OPENAI_TRANSCRIPTION_MAX_ATTEMPTS", "5")
+    monkeypatch.setenv("OPENAI_TRANSCRIPTION_RETRY_SLEEP_SECONDS", "1.5")
+    monkeypatch.setenv("OPENAI_RETRY_SLEEP_SECONDS", "7.5")
 
     settings = Settings(_env_file=None, openai_api_key="sk-test-value")
 
     assert settings.api_base_url == "https://api.example.test/base"
     assert settings.analyze_poll_interval_seconds == 2.5
     assert settings.ytdlp_js_runtime == "bun"
+    assert settings.openai_transcription_max_attempts == 5
+    assert settings.openai_transcription_retry_sleep_seconds == 1.5
+    assert settings.openai_retry_sleep_seconds == 7.5
 
 
 def test_ytdlp_js_runtime_can_be_disabled() -> None:
@@ -102,6 +112,9 @@ def test_ytdlp_js_runtime_can_be_disabled() -> None:
         ("default_max_duration_minutes", 0),
         ("analyze_poll_interval_seconds", 0),
         ("analyze_poll_interval_seconds", -1),
+        ("openai_transcription_max_attempts", 0),
+        ("openai_transcription_retry_sleep_seconds", -1),
+        ("openai_retry_sleep_seconds", -1),
     ],
 )
 def test_settings_reject_invalid_ranges_and_empty_models(field: str, value: object) -> None:
