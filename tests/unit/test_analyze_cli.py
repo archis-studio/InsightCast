@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from insightcast.cli import analyze
 from insightcast.cli.analyze import HttpResponse, run_analysis
 from insightcast.core.config import Settings
 
@@ -486,3 +487,34 @@ def test_ctrl_c_stops_monitoring_and_retains_job_id() -> None:
     assert "Local monitoring stopped" in errors
     assert "API job may continue" in errors
     assert "job-123" in errors
+
+
+def test_cli_formats_render_stage_summary() -> None:
+    stdout = StringIO()
+    payload = {
+        "render_batches": [
+            {
+                "render_id": "render-1",
+                "status": "COMPLETED",
+                "stages": [
+                    {
+                        "stage": "translate_subtitles",
+                        "status": "completed",
+                        "resume_strategy": "reuse validated translation batches",
+                    },
+                    {
+                        "stage": "validate_render",
+                        "status": "completed",
+                        "resume_strategy": "render is publishable",
+                    },
+                ],
+            }
+        ]
+    }
+
+    analyze._print_render_stage_summary(payload, stdout=stdout)
+
+    output = stdout.getvalue()
+    assert "Render render-1: COMPLETED" in output
+    assert "translate_subtitles: completed" in output
+    assert "validate_render: completed" in output

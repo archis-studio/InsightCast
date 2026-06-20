@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -123,6 +123,27 @@ def _print_line(stdout: TextIO, now: Callable[[], datetime], message: str) -> No
 def _print_verbose(stdout: TextIO, payload: dict[str, object], verbose: bool) -> None:
     if verbose:
         print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False), file=stdout)
+
+
+def _print_render_stage_summary(payload: dict[str, Any], *, stdout: TextIO) -> None:
+    for batch in payload.get("render_batches", []):
+        print(
+            f"Render {batch.get('render_id')}: {batch.get('status')}",
+            file=stdout,
+        )
+        for stage in batch.get("stages", []):
+            print(
+                f"  {stage.get('stage')}: {stage.get('status')}",
+                file=stdout,
+            )
+            if stage.get("error"):
+                error = stage["error"]
+                print(
+                    "    "
+                    f"error_code={error.get('error_code')} "
+                    f"resume={stage.get('resume_strategy')}",
+                    file=stdout,
+                )
 
 
 def format_elapsed(seconds: float) -> str:
