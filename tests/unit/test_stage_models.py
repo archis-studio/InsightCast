@@ -7,7 +7,6 @@ from insightcast.domain.enums import ErrorCode
 from insightcast.domain.models import JobError
 from insightcast.domain.stages import PipelineStage, StageManifest, StageRecord, StageStatus
 
-
 NOW = datetime(2026, 6, 19, 12, 0, tzinfo=UTC)
 
 

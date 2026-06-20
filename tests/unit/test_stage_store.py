@@ -8,7 +8,6 @@ from insightcast.domain.enums import ErrorCode
 from insightcast.domain.stages import PipelineStage, StageManifest, StageRecord, StageStatus
 from insightcast.storage.stage_store import StageStore
 
-
 NOW = datetime(2026, 6, 19, 12, 0, tzinfo=UTC)
 
 

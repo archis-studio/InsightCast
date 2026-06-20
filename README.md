@@ -211,7 +211,12 @@ curl -sS -X POST \
 ```
 
 `candidate_ids` 也可使用字串 `"A"`。已完成的 candidate 預設跳過並回傳現有 artifacts；
-`force_render=true` 會建立新的 timestamped batch。
+`force_render=true` 會建立新的 timestamped batch。`force_translate=true` 會重做字幕翻譯，
+但保留同一個 render batch；`force_metadata=true` 會重新產生 YouTube metadata。
+預設情況下，系統會重用 ready renders 並從安全 checkpoint resume。
+
+Render responses 會包含 stage summaries。需要詳細 resume 與錯誤診斷時，查看 render
+目錄中的 `stage-manifest.json`。
 
 ```bash
 curl -sS \

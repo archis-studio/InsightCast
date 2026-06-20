@@ -54,9 +54,12 @@ class StageRecord(DomainModel):
             raise ValueError("failed stages require error")
         if self.status is not StageStatus.FAILED and self.error is not None:
             raise ValueError("non-failed stages must not carry error")
-        if self.completed_at is not None and self.started_at is not None:
-            if self.completed_at < self.started_at:
-                raise ValueError("completed_at must not precede started_at")
+        if (
+            self.completed_at is not None
+            and self.started_at is not None
+            and self.completed_at < self.started_at
+        ):
+            raise ValueError("completed_at must not precede started_at")
         return self
 
 
