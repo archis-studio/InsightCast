@@ -116,16 +116,17 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
     payload = json.loads(prompt)
     system = metadata.SYSTEM_PROMPT.lower()
 
-    assert metadata.PROMPT_VERSION == "metadata-v2"
+    assert metadata.PROMPT_VERSION == "metadata-v3"
     assert "traditional chinese" in system
-    assert "knowledge-news" in system
+    assert "youtube metadata" in system
     assert "translated highlight" in system
     assert "original video" in system
     assert "unsupported" in system
     assert payload["title_strategy"] == [
-        "what_happened_was_found_or_is_argued",
-        "central_conclusion_or_consequence",
-        "why_it_deserves_attention",
+        "traditional_chinese_viewer_value_first",
+        "selected_highlight_focus",
+        "source_title_element_for_trust_search_or_attribution",
+        "grounded_curiosity_without_clickbait",
     ]
     assert payload["description_strategy"] == [
         "why_the_topic_matters",
@@ -133,4 +134,33 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
         "necessary_context",
         "traditional_chinese_translated_highlight_disclosure",
         "consult_original_video_for_full_discussion",
+    ]
+
+
+def test_metadata_prompt_preserves_source_title_equity_for_highlight_metadata() -> None:
+    prompt = metadata.build_user_prompt(
+        source_title="How to Speak",
+        summary="The segment explains how vision and contribution make talks persuasive.",
+        transcript_excerpt="Vision, contribution, and a strong ending make a talk memorable.",
+    )
+    payload = json.loads(prompt)
+    system = metadata.SYSTEM_PROMPT.lower()
+
+    assert metadata.PROMPT_VERSION == "metadata-v3"
+    assert "source title" in system
+    assert "highlight" in system
+    assert "traditional chinese title" in system
+    assert "should lead" in system
+    assert payload["source_title_retention_strategy"] == [
+        "preserve_one_recognizable_source_title_element",
+        "do_not_force_the_full_original_title",
+        "blend_source_title_element_with_selected_highlight_focus",
+    ]
+    assert payload["highlight_positioning"] == (
+        "Package the selected segment as a valuable Traditional Chinese highlight, "
+        "not as a replacement for the full original video."
+    )
+    assert payload["title_style_examples"] == [
+        "如何讓演講更有說服力？《How to Speak》精華：Vision、Contribution 與強收尾",
+        "AI 如何改變工作？《原標題關鍵詞》精華：最值得重看的 12 分鐘",
     ]
