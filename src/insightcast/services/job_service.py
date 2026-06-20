@@ -526,7 +526,7 @@ class JobService:
                             "job_id": job.job_id,
                             "source_video": str(job.source_artifacts.source_video),
                         },
-                        stage="rendering",
+                        stage=PipelineStage.SOURCE_INGESTION.value,
                     )
                 stage_manifest = self._load_stage_manifest(
                     render_dir=candidate_dir,
@@ -556,10 +556,9 @@ class JobService:
                         stage=PipelineStage.CUT_CLIP,
                         status=StageStatus.COMPLETED,
                         resume_strategy=(
-                            "reuse video.unburned.mp4 when source fingerprint "
-                            "and candidate timing match"
+                            "rerun cut_clip unless a completed render manifest "
+                            "can be reused"
                         ),
-                        artifacts={"temporary_clip": temporary_clip},
                         fresh=True,
                     ),
                 )
@@ -712,7 +711,7 @@ class JobService:
                 )
                 error = self._as_job_error(exc, "rendering")
                 failed_stage = getattr(exc, "stage", None) or "rendering"
-                stage_manifest = self._load_stage_manifest(
+                stage_manifest = self._load_stage_manifest_or_new(
                     render_dir=candidate_dir,
                     job_id=job.job_id,
                     render_id=batch.render_id,
@@ -725,7 +724,7 @@ class JobService:
                         stage=(
                             PipelineStage(failed_stage)
                             if failed_stage in {stage.value for stage in PipelineStage}
-                            else PipelineStage.VALIDATE_RENDER
+                            else PipelineStage.SOURCE_INGESTION
                         ),
                         status=StageStatus.FAILED,
                         resume_strategy=f"rerun render to resume from {failed_stage}",
@@ -1143,6 +1142,28 @@ class JobService:
             render_id=render_id,
             candidate_id=candidate_id,
         )
+
+    def _load_stage_manifest_or_new(
+        self,
+        *,
+        render_dir: Path,
+        job_id: str,
+        render_id: str,
+        candidate_id: str | None,
+    ) -> StageManifest:
+        try:
+            return self._load_stage_manifest(
+                render_dir=render_dir,
+                job_id=job_id,
+                render_id=render_id,
+                candidate_id=candidate_id,
+            )
+        except InsightCastError:
+            return StageManifest(
+                operation_id=job_id,
+                render_id=render_id,
+                candidate_id=candidate_id,
+            )
 
     def _append_stage_record(
         self,

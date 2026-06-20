@@ -756,6 +756,11 @@ async def test_render_reports_removed_source_artifact(tmp_path: Path) -> None:
         batch.candidate_results["A"].error.error_code
         == ErrorCode.SOURCE_CACHE_MISSING
     )
+    payload = json.loads(
+        (batch.output_dir / "stage-manifest.json").read_text(encoding="utf-8")
+    )
+    assert payload["stages"][-1]["stage"] == "source_ingestion"
+    assert payload["stages"][-1]["error"]["stage"] == "source_ingestion"
     assert clip.calls == []
 
 
@@ -783,6 +788,32 @@ async def test_candidate_render_writes_stage_manifest(tmp_path: Path) -> None:
         "validate_render",
     ]
     assert all(stage["status"] == "completed" for stage in payload["stages"])
+    assert payload["stages"][0]["artifacts"] == {}
+
+
+@pytest.mark.asyncio
+async def test_invalid_existing_stage_manifest_does_not_escape_render_failure(
+    tmp_path: Path,
+) -> None:
+    service, _, _ = make_service(tmp_path)
+    job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+    await service.process(await service.queue.get())
+
+    batch = await service.create_render(
+        job.job_id,
+        CandidateSelectionRequest(candidate_ids="A", force_render=True),
+    )
+    batch.output_dir.mkdir(parents=True, exist_ok=True)
+    (batch.output_dir / "stage-manifest.json").write_text("{", encoding="utf-8")
+
+    await service.process(await service.queue.get())
+
+    assert batch.status == JobStatus.FAILED
+    assert batch.candidate_results["A"].error is not None
+    manifest = RenderManifest.model_validate_json(
+        (batch.output_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest.render_state is RenderState.FAILED
 
 
 @pytest.mark.asyncio
