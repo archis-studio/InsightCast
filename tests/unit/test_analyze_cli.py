@@ -7,7 +7,8 @@ from typing import Any
 import pytest
 
 from insightcast.cli import analyze
-from insightcast.cli.analyze import HttpResponse, run_analysis
+from insightcast.cli.analyze import run_analysis
+from insightcast.cli.api_client import HttpResponse
 from insightcast.core.config import Settings
 
 YOUTUBE_URL = "https://www.youtube.com/watch?v=abc123DEF_-"

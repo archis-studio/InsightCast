@@ -13,15 +13,17 @@ from pydantic import ValidationError
 from insightcast.cli.analyze import (
     ACTIVE_STATUSES,
     FAILURE_STATUS,
+    _print_line,
+    _required_string,
+    format_elapsed,
+)
+from insightcast.cli.api_client import (
     ApiProtocolError,
     CliError,
     Requester,
-    _print_line,
-    _request_json,
-    _required_string,
-    _validate_health,
     default_requester,
-    format_elapsed,
+    request_json,
+    validate_health,
 )
 from insightcast.core.config import Settings
 
@@ -153,7 +155,7 @@ def _print_persisted_renders_after_job_not_found(
     candidate_ids: list[str],
     stdout: TextIO,
 ) -> bool:
-    payload = _request_json(
+    payload = request_json(
         requester,
         "GET",
         f"{settings.api_base_url}/api/v1/videos/{video_id}/renders",
@@ -230,19 +232,19 @@ def run_render(
 ) -> int:
     try:
         _print_line(stdout, now, f"Checking API: {settings.api_base_url}")
-        health = _request_json(
+        health = request_json(
             requester,
             "GET",
             f"{settings.api_base_url}/health",
             expected_status=200,
         )
-        ffmpeg, queue_worker = _validate_health(health)
+        ffmpeg, queue_worker = validate_health(health)
         _print_line(
             stdout,
             now,
             f"API ready: ffmpeg={ffmpeg}, queue_worker={queue_worker}",
         )
-        created = _request_json(
+        created = request_json(
             requester,
             "POST",
             f"{settings.api_base_url}/api/v1/analysis-jobs/{job_id}/renders",
@@ -267,7 +269,7 @@ def run_render(
             if not first_poll:
                 sleep(settings.analyze_poll_interval_seconds)
             first_poll = False
-            polled = _request_json(
+            polled = request_json(
                 requester,
                 "GET",
                 f"{settings.api_base_url}/api/v1/analysis-jobs/{job_id}/renders",

@@ -1,10 +1,12 @@
+import ast
 import json
 from collections.abc import Callable
 from datetime import datetime
 from io import StringIO
+from pathlib import Path
 from typing import Any
 
-from insightcast.cli.analyze import HttpResponse
+from insightcast.cli.api_client import HttpResponse
 from insightcast.cli.render import run_render
 from insightcast.core.config import Settings
 
@@ -340,3 +342,26 @@ def test_job_not_found_can_report_matching_persisted_render() -> None:
     assert "Bilingual ASS:" in output
     assert "YouTube metadata:" in output
     assert "API error JOB_NOT_FOUND" in errors
+
+
+def test_render_cli_does_not_import_analyze_cli_api_helpers() -> None:
+    forbidden = {
+        "ApiProtocolError",
+        "ApiRequestError",
+        "CliError",
+        "HttpResponse",
+        "Requester",
+        "_request_json",
+        "_validate_health",
+        "default_requester",
+    }
+    source = Path("src/insightcast/cli/render.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imported_names = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "insightcast.cli.analyze"
+        for alias in node.names
+    }
+
+    assert imported_names.isdisjoint(forbidden)
