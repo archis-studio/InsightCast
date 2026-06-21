@@ -78,6 +78,60 @@ uv sync --extra dev
 編輯 `.env`，至少將 `OPENAI_API_KEY` 換成有效值。請勿提交 `.env`、在 issue
 貼出 API key，或把 key 放入 curl request。專案啟動時會拒絕空白與常見 placeholder。
 
+## Quick Start：從 clone 到第一支剪輯
+
+這是新使用者或 AI agent 最短、最穩定的操作路徑。所有命令都從 repository root 執行。
+
+1. 安裝 dependency 並確認工具：
+
+   ```bash
+   uv sync --extra dev
+   uv --version
+   ffmpeg -version
+   ffprobe -version
+   ```
+
+2. 建立並編輯本機設定：
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   至少設定有效的 `OPENAI_API_KEY`。如果要讓 agent 操作，請由使用者自己準備 `.env`；
+   agent 不應要求貼出 key，也不應把 `.env` 內容輸出到對話或 log。
+
+3. 在第一個 terminal 啟動 API server：
+
+   ```bash
+   uv run cast_api
+   ```
+
+   保持這個 process 持續執行。Analysis job ID 與 render queue 都存在目前 server
+   process；server 重啟後，舊 job ID 不會恢復，但 `outputs/videos` 裡的 manifests
+   與完成品仍會保留。
+
+4. 在第二個 terminal 確認 server 存活並分析 YouTube：
+
+   ```bash
+   curl -fsS http://127.0.0.1:8765/health
+   uv run cast_analyze "https://www.youtube.com/watch?v=abc123DEF_-"
+   ```
+
+   `WAITING_SELECTION` 代表分析成功完成。選一個 candidate ID，例如 `B`。
+
+5. 只有在要產生剪輯影片時才 render：
+
+   ```bash
+   uv run cast_render ANALYSIS_JOB_ID B --wait
+   ```
+
+   完成後，CLI 會列出 render directory、`video.mp4`、繁中 SRT、雙語 ASS、
+   YouTube metadata、manifest、`stage-manifest.json` 與 operation log。若 `ffprobe`
+   可用，也會驗證 MP4 duration 與 size。
+
+給 AI agent 的操作原則：不要自行啟動或停止 `cast_api`，除非使用者明確要求；先確認
+server 存活，再跑 `cast_analyze`；只有使用者明確指定 candidate 時才跑 `cast_render`。
+
 ### 環境變數
 
 | 變數 | 必要 | 預設 | 說明與範例 |
@@ -100,14 +154,19 @@ uv sync --extra dev
 | `TRANSCRIPTION_PROVIDER` | 否 | `openai` | `openai` 或 `local`。 |
 | `OPENAI_TRANSCRIPTION_MODEL` | 否 | `whisper-1` | 需要 timestamped segments 的轉錄 model。 |
 | `OPENAI_TRANSCRIPTION_MAX_UPLOAD_MB` | 否 | `8` | 單一 audio chunk 上限，最大 25 MB；長片建議維持較小以降低轉錄 timeout。 |
+| `OPENAI_TRANSCRIPTION_MAX_ATTEMPTS` | 否 | `3` | 單一 audio chunk 轉錄失敗時的最大嘗試次數，範圍 1-10。 |
+| `OPENAI_TRANSCRIPTION_RETRY_SLEEP_SECONDS` | 否 | `0` | OpenAI 轉錄 chunk retry 間隔秒數；可在 rate limit 或暫時性錯誤時調高。 |
 | `WHISPER_MODEL_SIZE` | 否 | `large-v3` | faster-whisper model size。 |
 | `WHISPER_DEVICE` | 否 | `auto` | faster-whisper device，例如 `cpu`、`cuda`。 |
 | `FFMPEG_BIN` | 否 | `ffmpeg` | FFmpeg executable path。 |
 | `YTDLP_JS_RUNTIME` | 否 | `node` | 傳給 yt-dlp 的 JavaScript runtime，例如 `node`、`deno` 或 `bun`；設為空白可停用。 |
 | `VIDEO_MAX_HEIGHT` | 否 | `1080` | yt-dlp 下載解析度上限。 |
 | `VIDEO_CRF` | 否 | `18` | H.264 CRF，數值越低通常品質與檔案越大。 |
+| `SUBTITLE_CHINESE_FONT_SIZE` | 否 | `72` | 燒錄雙語 ASS 時繁中文字級；手機觀看可調大。 |
+| `SUBTITLE_ENGLISH_FONT_SIZE` | 否 | `60` | 燒錄雙語 ASS 時英文字級；通常略小於繁中。 |
 | `OPENAI_TIMEOUT_SECONDS` | 否 | `120` | OpenAI request timeout。 |
 | `OPENAI_MAX_RETRIES` | 否 | `2` | Structured request retry 次數。 |
+| `OPENAI_RETRY_SLEEP_SECONDS` | 否 | `10` | Structured OpenAI request retry 間隔秒數。 |
 
 ### 本機 Whisper fallback
 
@@ -142,6 +201,28 @@ uv run cast_api
 
 啟動時會驗證設定與 FFmpeg。Local Whisper model 不會在 startup 下載。
 
+### `cast_api` 參數與設定
+
+`cast_api` 是 API server entrypoint，不接受 CLI options；設定全部來自 `.env` 或環境變數。
+
+```bash
+uv run cast_api
+```
+
+常用設定：
+
+| 設定 | 作用 |
+| --- | --- |
+| `API_HOST` | Server bind host。Docker 內通常設為 `0.0.0.0`；本機預設 `127.0.0.1`。 |
+| `API_PORT` | Server bind port，預設 `8765`。 |
+| `OUTPUT_DIR` | 持久化 video、analysis、render、log 的根目錄。 |
+| `WORK_DIR` | pipeline 暫存目錄；失敗時可能保留診斷檔。 |
+| `OPENAI_API_KEY` | 必要。不能是空白或 placeholder。 |
+| `FFMPEG_BIN` | FFmpeg executable path。 |
+
+`API_BASE_URL` 不影響 server binding；它只控制 CLI 要連到哪個 API URL。若 server
+無法啟動，先看 terminal 中的 settings validation、FFmpeg 檢查或 port already in use。
+
 ## Analysis CLI
 
 API server lifecycle 與分析命令分開管理。先在一個 terminal 啟動 server：
@@ -167,6 +248,15 @@ uv run cast_analyze "https://www.youtube.com/watch?v=abc123DEF_-"
 ```bash
 uv run cast_analyze --verbose "https://www.youtube.com/watch?v=abc123DEF_-"
 ```
+
+可用參數：
+
+| 參數 | 說明 |
+| --- | --- |
+| `youtube_url` | 必填。YouTube watch、share、embed 或 Shorts URL。 |
+| `--verbose` | 每次成功 API request 後印出完整 JSON response，適合診斷 API payload。 |
+| `--force` | 不重用同一 server process 內相同 URL 的最新 analysis job，強制建立新 analysis。 |
+| `-h`, `--help` | 顯示 CLI help。 |
 
 CLI 不會啟動、停止或重啟 server，也沒有整體 timeout。`Ctrl-C` 只停止本機監看，
 server job 可能仍會繼續。Exit code `0` 表示到達 `WAITING_SELECTION`，`1` 表示 API
@@ -242,6 +332,16 @@ uv run cast_render ANALYSIS_JOB_ID A B --wait
 ```bash
 uv run cast_render ANALYSIS_JOB_ID B --wait --force-render
 ```
+
+可用參數：
+
+| 參數 | 說明 |
+| --- | --- |
+| `job_id` | 必填。`cast_analyze` 回報的 analysis job ID；只在目前 running server process 內有效。 |
+| `candidate_ids` | 必填，可一個或多個，例如 `B` 或 `A B`；CLI 會轉成大寫。 |
+| `--wait` | 輪詢 render list，直到 batch `COMPLETED` 或 `FAILED`。一般操作建議加上。 |
+| `--force-render` | 即使已有可重用 artifacts 也建立新 render；只有明確需要新版本時使用。 |
+| `-h`, `--help` | 顯示 CLI help。 |
 
 CLI 會先檢查 `/health`，再呼叫下列 API。低階診斷或自動化整合可直接使用 API：
 
