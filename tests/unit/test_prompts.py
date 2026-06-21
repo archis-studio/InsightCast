@@ -116,24 +116,47 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
     payload = json.loads(prompt)
     system = metadata.SYSTEM_PROMPT.lower()
 
-    assert metadata.PROMPT_VERSION == "metadata-v3"
+    assert metadata.PROMPT_VERSION == "metadata-v4"
     assert "traditional chinese" in system
     assert "youtube metadata" in system
     assert "translated highlight" in system
     assert "original video" in system
+    assert "insightcast" in system
+    assert "brand voice" in system
+    assert "viewer outcome" in system
     assert "unsupported" in system
+    assert payload["brand_positioning"] == {
+        "product": "InsightCast",
+        "promise": (
+            "help Traditional Chinese viewers quickly decide why this foreign-language "
+            "knowledge highlight is worth their attention"
+        ),
+        "voice": [
+            "editorial",
+            "precise",
+            "premium_but_plainspoken",
+            "curious_without_hype",
+        ],
+    }
     assert payload["title_strategy"] == [
-        "traditional_chinese_viewer_value_first",
-        "selected_highlight_focus",
-        "source_title_element_for_trust_search_or_attribution",
-        "grounded_curiosity_without_clickbait",
+        "lead_with_viewer_outcome_or_core_tension",
+        "name_the_specific_idea_not_the_whole_episode",
+        "use_one_source_anchor_for_trust_when_helpful",
+        "make_it_clickable_without_sounding_like_clickbait",
     ]
     assert payload["description_strategy"] == [
-        "why_the_topic_matters",
-        "central_claim_and_supporting_reasoning",
-        "necessary_context",
+        "opening_hook_for_target_viewer",
+        "why_this_clip_matters_now",
+        "what_the_viewer_will_understand_after_watching",
+        "key_reasoning_or_examples_from_the_segment",
         "traditional_chinese_translated_highlight_disclosure",
-        "consult_original_video_for_full_discussion",
+        "original_video_attribution_for_full_context",
+    ]
+    assert payload["title_quality_bar"] == [
+        "specific_enough_to_stand_without_the_original_title",
+        "short_enough_for_mobile_scanning",
+        "no_generic_prefix_like_影片主張_or_這段精華",
+        "no_unsupported_superlatives_or_guarantees",
     ]
 
 
@@ -146,21 +169,29 @@ def test_metadata_prompt_preserves_source_title_equity_for_highlight_metadata() 
     payload = json.loads(prompt)
     system = metadata.SYSTEM_PROMPT.lower()
 
-    assert metadata.PROMPT_VERSION == "metadata-v3"
+    assert metadata.PROMPT_VERSION == "metadata-v4"
     assert "source title" in system
     assert "highlight" in system
     assert "traditional chinese title" in system
     assert "should lead" in system
+    assert "packaging editor" in system
     assert payload["source_title_retention_strategy"] == [
-        "preserve_one_recognizable_source_title_element",
+        "preserve_one_recognizable_source_title_element_when_it_adds_trust",
         "do_not_force_the_full_original_title",
-        "blend_source_title_element_with_selected_highlight_focus",
+        "do_not_let_source_title_overpower_the_clip_value",
+        "blend_source_anchor_with_selected_highlight_focus",
     ]
     assert payload["highlight_positioning"] == (
-        "Package the selected segment as a valuable Traditional Chinese highlight, "
-        "not as a replacement for the full original video."
+        "Package the selected segment as a standalone InsightCast knowledge highlight "
+        "for Traditional Chinese viewers, not as a replacement for the full original video."
     )
     assert payload["title_style_examples"] == [
-        "如何讓演講更有說服力？《How to Speak》精華：Vision、Contribution 與強收尾",
-        "AI 如何改變工作？《原標題關鍵詞》精華：最值得重看的 12 分鐘",
+        "讓簡報被記住的關鍵：Vision、Contribution 與強收尾｜How to Speak",
+        "別再只改 Prompt：Karpathy 的三層 AI 工作法",
+    ]
+    assert payload["description_structure"] == [
+        "one_sentence_hook",
+        "2_to_3_short_paragraphs_or_compact_bullets",
+        "clear_original_source_attribution",
+        "traditional_chinese_highlight_disclosure",
     ]

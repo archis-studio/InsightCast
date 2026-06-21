@@ -56,7 +56,8 @@ async def test_publish_engine_generates_private_metadata_and_writes_traceable_js
     assert payload["generated"]["privacy_status"] == "private"
     assert payload["source"]["video_id"] == "abc123DEF_-"
     assert payload["trace"]["model"] == "gpt-metadata"
-    assert payload["trace"]["prompt_version"] == "metadata-v3"
+    assert payload["trace"]["prompt_version"] == "metadata-v4"
     call_prompt = json.loads(str(client.calls[0]["user_prompt"]))
     assert call_prompt["summary"] == "Candidate summary"
     assert call_prompt["transcript_excerpt"] == "Transcript excerpt"
+    assert call_prompt["brand_positioning"]["product"] == "InsightCast"
