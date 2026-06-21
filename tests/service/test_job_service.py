@@ -225,7 +225,7 @@ class FakeCurator:
                 ),
             ],
             model="gpt-curator",
-            prompt_version="topic-discovery-v1+curator-v3",
+            prompt_version="topic-discovery-v2+curator-v4",
         )
 
 

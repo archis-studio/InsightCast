@@ -2,11 +2,12 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-PROMPT_VERSION = "topic-discovery-v1"
+PROMPT_VERSION = "topic-discovery-v2"
 SYSTEM_PROMPT = """Evaluate the full transcript and identify distinct important claims,
-findings, explanations, consequences, and decisions. Rank topics by importance, merge semantic
-duplicates, and do not rank material merely because it uses controversy or emotional phrasing.
-Return only the requested structured output."""
+findings, explanations, consequences, and decisions that can become standalone InsightCast
+highlights. Rank topics by source importance and viewer value, merge semantic duplicates,
+and do not rank material merely because it uses controversy or emotional phrasing. Return
+only the requested structured output."""
 
 
 def build_user_prompt(
@@ -20,6 +21,19 @@ def build_user_prompt(
         "evaluate_full_transcript": True,
         "rank_by_importance": True,
         "require_distinct_topics": True,
+        "evaluation_rubric": [
+            "importance_to_the_source_argument",
+            "standalone_clip_potential",
+            "audience_relevance_for_traditional_chinese_viewers",
+            "specific_or_counterintuitive_insight",
+            "evidence_density",
+            "evergreen_value",
+            "low_context_dependency",
+        ],
+        "ranking_instruction": (
+            "Rank topics by expected InsightCast highlight value, not by emotional intensity "
+            "or how early the idea appears in the source."
+        ),
         "exclude_low_value_material": [
             "greetings",
             "sponsorships",

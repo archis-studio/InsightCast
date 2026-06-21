@@ -45,7 +45,7 @@ def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None
 
     assert '"candidate_count": 2' in curator_user
     curator_payload = json.loads(curator_user)
-    assert curator.PROMPT_VERSION == "curator-v3"
+    assert curator.PROMPT_VERSION == "curator-v4"
     assert curator_payload["topics"][0]["topic_id"] == "T1"
     assert (
         curator_payload["transcript_scope"]
@@ -55,6 +55,7 @@ def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None
     assert curator_payload["selection_priority"] == [
         "importance",
         "complete_argument",
+        "standalone_viewer_value",
         "information_density",
         "duration_fit",
     ]
@@ -76,6 +77,18 @@ def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None
     assert "complete argument" in curator_payload["duration_instruction"].lower()
     assert "segment alignment" in curator_payload["duration_instruction"].lower()
     assert "low-value material" in curator_payload["duration_instruction"].lower()
+    assert curator_payload["candidate_quality_bar"] == [
+        "clear_standalone_viewer_payoff",
+        "specific_insight_or_tension",
+        "enough_context_without_long_setup",
+        "evidence_or_reasoning_inside_the_clip",
+        "minimal_overlap_with_other_candidates",
+        "defensible_title_and_summary",
+    ]
+    assert curator_payload["overlap_policy"] == (
+        "Prefer non-overlapping candidates. Only reuse source time when the second "
+        "candidate explains a materially different idea and the overlap is necessary."
+    )
     assert '"segment_id": "s1"' in translation_user
     assert '"source_title": "Source"' in metadata_user
 
@@ -88,7 +101,7 @@ def test_topic_discovery_prompt_ranks_distinct_important_topics() -> None:
     )
 
     payload = json.loads(user_prompt)
-    assert topic_discovery.PROMPT_VERSION == "topic-discovery-v1"
+    assert topic_discovery.PROMPT_VERSION == "topic-discovery-v2"
     assert payload["topic_pool_size"] == 4
     assert payload["evaluate_full_transcript"] is True
     assert payload["rank_by_importance"] is True
@@ -100,9 +113,23 @@ def test_topic_discovery_prompt_ranks_distinct_important_topics() -> None:
         "anecdotes_without_a_broader_point",
         "setup_without_a_conclusion",
     ]
+    assert payload["evaluation_rubric"] == [
+        "importance_to_the_source_argument",
+        "standalone_clip_potential",
+        "audience_relevance_for_traditional_chinese_viewers",
+        "specific_or_counterintuitive_insight",
+        "evidence_density",
+        "evergreen_value",
+        "low_context_dependency",
+    ]
+    assert payload["ranking_instruction"] == (
+        "Rank topics by expected InsightCast highlight value, not by emotional intensity "
+        "or how early the idea appears in the source."
+    )
     system_prompt = topic_discovery.SYSTEM_PROMPT.lower()
     assert "full transcript" in system_prompt
     assert "importance" in system_prompt
+    assert "standalone" in system_prompt
     assert "distinct" in system_prompt
     assert "controvers" in system_prompt
 

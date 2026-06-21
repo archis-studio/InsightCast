@@ -315,7 +315,7 @@ async def test_curate_discovers_topics_then_selects_candidates() -> None:
     candidate_prompt = str(client.calls[1]["user_prompt"])
     assert '"topic_id": "T1"' in candidate_prompt
     assert '"topic_id": "T2"' in candidate_prompt
-    assert result.prompt_version == "topic-discovery-v1+curator-v3"
+    assert result.prompt_version == "topic-discovery-v2+curator-v4"
 
 
 @pytest.mark.asyncio
