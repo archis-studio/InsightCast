@@ -61,6 +61,7 @@ Renders selected candidate IDs through the running API.
 uv run cast_render ANALYSIS_JOB_ID B --wait
 uv run cast_render ANALYSIS_JOB_ID A B --wait
 uv run cast_render ANALYSIS_JOB_ID B --wait --force-render
+uv run cast_render ANALYSIS_JOB_ID B --video-id VIDEO_ID --analysis-id ANALYSIS_ID
 ```
 
 - `ANALYSIS_JOB_ID`: required job ID from `cast_analyze`; valid only while the
@@ -70,6 +71,10 @@ uv run cast_render ANALYSIS_JOB_ID B --wait --force-render
   operator work.
 - `--force-render`: create a new render even if reusable artifacts already
   exist. Use only when the user explicitly wants a fresh render.
+- `--video-id` and `--analysis-id`: optional recovery context. When
+  `ANALYSIS_JOB_ID` is gone after an API restart, these let the CLI query
+  persisted ready render artifacts for the same analysis/candidate. They do not
+  queue new render work.
 
 ## YouTube Analysis Workflow
 
@@ -123,9 +128,11 @@ the user explicitly asks to render.
 9. On failure, report the CLI/API error, inspect `stage-manifest.json`, and inspect
    the operation log for the failed stage and traceback.
 10. If the API returns `JOB_NOT_FOUND`, explain that analysis job IDs are
-    process-local. Ask the user to rerun analysis on the current server process,
-    or inspect persisted artifacts under `outputs/videos` if they only need old
-    results.
+    process-local. If the previous analysis output includes `video_id` and
+    `analysis_id`, retry once with
+    `uv run cast_render ANALYSIS_JOB_ID CANDIDATE --video-id VIDEO_ID --analysis-id ANALYSIS_ID`
+    to report any matching ready persisted render. If no ready render exists,
+    ask the user to rerun analysis on the current server process.
 
 ## Reporting Checklist
 

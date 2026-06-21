@@ -11,6 +11,8 @@ from insightcast.core.config import Settings
 API_BASE_URL = "http://127.0.0.1:8765"
 JOB_ID = "job-123"
 RENDER_ID = "render-abc"
+VIDEO_ID = "abc123DEF_-"
+ANALYSIS_ID = "analysis-123"
 
 
 def response(status_code: int, payload: object) -> HttpResponse:
@@ -51,6 +53,38 @@ def job_not_found_response() -> HttpResponse:
             "error_code": "JOB_NOT_FOUND",
             "message": "The requested job does not exist in this server process.",
             "details": {"job_id": JOB_ID},
+        },
+    )
+
+
+def persisted_render_list_response() -> HttpResponse:
+    output_dir = "/tmp/outputs/videos/example/analyses/analysis-123/candidates/B/renders/render-old"
+    return response(
+        200,
+        {
+            "video_id": VIDEO_ID,
+            "renders": [
+                {
+                    "render_id": "render-old",
+                    "operation_id": "op-render-old",
+                    "kind": "candidate",
+                    "analysis_id": ANALYSIS_ID,
+                    "candidate_id": "B",
+                    "start_seconds": 10.0,
+                    "end_seconds": 70.0,
+                    "render_state": "ready",
+                    "publish_state": "not-uploaded",
+                    "created_at": "2026-06-21T00:00:00Z",
+                    "completed_at": "2026-06-21T00:01:00Z",
+                    "manifest_path": f"{output_dir}/manifest.json",
+                    "artifacts": {
+                        "traditional_chinese_srt": f"{output_dir}/subtitles.zh-TW.srt",
+                        "bilingual_ass": f"{output_dir}/subtitles.bilingual.ass",
+                        "burned_video": f"{output_dir}/video.mp4",
+                        "youtube_metadata": f"{output_dir}/youtube-metadata.json",
+                    },
+                }
+            ],
         },
     )
 
@@ -178,6 +212,8 @@ def execute(
     *,
     wait: bool = False,
     force_render: bool = False,
+    video_id: str | None = None,
+    analysis_id: str | None = None,
     sleep: Callable[[float], None] | None = None,
     monotonic: Callable[[], float] | None = None,
 ) -> tuple[int, str, str]:
@@ -188,6 +224,8 @@ def execute(
         ["B"],
         wait=wait,
         force_render=force_render,
+        video_id=video_id,
+        analysis_id=analysis_id,
         settings=settings(analyze_poll_interval_seconds=2.5),
         requester=requester,
         sleep=sleep or (lambda _: None),
@@ -274,3 +312,31 @@ def test_job_not_found_explains_process_local_job_ids() -> None:
     assert "If the API was restarted" in errors
     assert "cast_analyze" in errors
     assert "outputs/videos" in errors
+
+
+def test_job_not_found_can_report_matching_persisted_render() -> None:
+    requester = ScriptedRequester(
+        [healthy_response(), job_not_found_response(), persisted_render_list_response()]
+    )
+
+    code, output, errors = execute(
+        requester,
+        video_id=VIDEO_ID,
+        analysis_id=ANALYSIS_ID,
+    )
+
+    assert code == 0
+    assert requester.requests[-1] == (
+        "GET",
+        f"{API_BASE_URL}/api/v1/videos/{VIDEO_ID}/renders",
+        None,
+    )
+    assert "API ready" in output
+    assert "Found persisted render artifacts after JOB_NOT_FOUND." in output
+    assert "Render ID: render-old" in output
+    assert "Candidate B:" in output
+    assert "Video MP4:" in output
+    assert "Traditional Chinese SRT:" in output
+    assert "Bilingual ASS:" in output
+    assert "YouTube metadata:" in output
+    assert "API error JOB_NOT_FOUND" in errors

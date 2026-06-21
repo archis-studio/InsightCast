@@ -129,6 +129,17 @@ uv sync --extra dev
    YouTube metadata、manifest、`stage-manifest.json` 與 operation log。若 `ffprobe`
    可用，也會驗證 MP4 duration 與 size。
 
+   如果 API server 重啟過，舊的 `ANALYSIS_JOB_ID` 會失效。這時若你仍知道 CLI 回報過的
+   `video_id` 與 `analysis_id`，可以讓 `cast_render` 查詢持久化結果：
+
+   ```bash
+   uv run cast_render ANALYSIS_JOB_ID B --video-id abc123DEF_- --analysis-id 20260621-112703-4ac471
+   ```
+
+   這個 fallback 只列出已存在且 `render_state=ready` 的 matching artifacts；它不會重新
+   queue render。若沒有 matching render，請在目前 server process 重新執行
+   `uv run cast_analyze` 後再 render。
+
 給 AI agent 的操作原則：不要自行啟動或停止 `cast_api`，除非使用者明確要求；先確認
 server 存活，再跑 `cast_analyze`；只有使用者明確指定 candidate 時才跑 `cast_render`。
 
@@ -341,6 +352,8 @@ uv run cast_render ANALYSIS_JOB_ID B --wait --force-render
 | `candidate_ids` | 必填，可一個或多個，例如 `B` 或 `A B`；CLI 會轉成大寫。 |
 | `--wait` | 輪詢 render list，直到 batch `COMPLETED` 或 `FAILED`。一般操作建議加上。 |
 | `--force-render` | 即使已有可重用 artifacts 也建立新 render；只有明確需要新版本時使用。 |
+| `--video-id` | 選填。當 `job_id` 因 server 重啟而 `JOB_NOT_FOUND` 時，用來查 `/api/v1/videos/{video_id}/renders`。 |
+| `--analysis-id` | 選填。搭配 `--video-id`，只回報同一 persisted analysis 與 candidate 的 ready render。 |
 | `-h`, `--help` | 顯示 CLI help。 |
 
 CLI 會先檢查 `/health`，再呼叫下列 API。低階診斷或自動化整合可直接使用 API：

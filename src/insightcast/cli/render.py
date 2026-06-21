@@ -30,7 +30,9 @@ RENDER_SUCCESS_STATUS = "COMPLETED"
 JOB_NOT_FOUND_GUIDANCE = (
     "This analysis job is not retained by the running API process. "
     "If the API was restarted, run `uv run cast_analyze` again for the same URL, "
-    "or inspect persisted renders under outputs/videos."
+    "or inspect persisted renders under outputs/videos. If you know the persisted "
+    "video and analysis IDs, retry with `--video-id VIDEO_ID --analysis-id ANALYSIS_ID` "
+    "to list matching completed render artifacts."
 )
 
 
@@ -99,6 +101,76 @@ def _required_artifact(artifacts: dict[str, object], field: str) -> Path:
     return Path(_required_string(artifacts, field))
 
 
+def _matching_persisted_renders(
+    payload: dict[str, object],
+    *,
+    analysis_id: str,
+    candidate_ids: list[str],
+) -> list[dict[str, Any]]:
+    renders = payload.get("renders")
+    if not isinstance(renders, list):
+        raise ApiProtocolError("API protocol error: persisted renders must be a list.")
+    requested = set(candidate_ids)
+    matches: list[dict[str, Any]] = []
+    for render in renders:
+        if (
+            isinstance(render, dict)
+            and render.get("analysis_id") == analysis_id
+            and render.get("candidate_id") in requested
+            and render.get("render_state") == "ready"
+        ):
+            matches.append(render)
+    return matches
+
+
+def _print_persisted_render(render: dict[str, Any], *, stdout: TextIO) -> None:
+    candidate_id = _required_string(render, "candidate_id")
+    artifacts = render.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ApiProtocolError("API protocol error: persisted render missing artifacts.")
+    print(f"Render ID: {_required_string(render, 'render_id')}", file=stdout)
+    print(f"Candidate {candidate_id}:", file=stdout)
+    print(f"  Video MP4: {_required_artifact(artifacts, 'burned_video')}", file=stdout)
+    print(
+        "  Traditional Chinese SRT: "
+        f"{_required_artifact(artifacts, 'traditional_chinese_srt')}",
+        file=stdout,
+    )
+    print(f"  Bilingual ASS: {_required_artifact(artifacts, 'bilingual_ass')}", file=stdout)
+    print(
+        f"  YouTube metadata: {_required_artifact(artifacts, 'youtube_metadata')}",
+        file=stdout,
+    )
+    print(f"  Render manifest: {_required_string(render, 'manifest_path')}", file=stdout)
+
+
+def _print_persisted_renders_after_job_not_found(
+    *,
+    requester: Requester,
+    settings: Settings,
+    video_id: str,
+    analysis_id: str,
+    candidate_ids: list[str],
+    stdout: TextIO,
+) -> bool:
+    payload = _request_json(
+        requester,
+        "GET",
+        f"{settings.api_base_url}/api/v1/videos/{video_id}/renders",
+    )
+    matches = _matching_persisted_renders(
+        payload,
+        analysis_id=analysis_id,
+        candidate_ids=candidate_ids,
+    )
+    if not matches:
+        return False
+    print("Found persisted render artifacts after JOB_NOT_FOUND.", file=stdout)
+    for render in matches:
+        _print_persisted_render(render, stdout=stdout)
+    return True
+
+
 def _print_completed_render(
     batch: dict[str, Any],
     candidate_ids: list[str],
@@ -146,6 +218,8 @@ def run_render(
     wait: bool,
     force_render: bool,
     settings: Settings,
+    video_id: str | None = None,
+    analysis_id: str | None = None,
     requester: Requester = default_requester,
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
@@ -243,6 +317,17 @@ def run_render(
     except CliError as exc:
         print(str(exc), file=stderr)
         if "API error JOB_NOT_FOUND" in str(exc):
+            if video_id and analysis_id:
+                found = _print_persisted_renders_after_job_not_found(
+                    requester=requester,
+                    settings=settings,
+                    video_id=video_id,
+                    analysis_id=analysis_id,
+                    candidate_ids=candidate_ids,
+                    stdout=stdout,
+                )
+                if found:
+                    return 0
             print(JOB_NOT_FOUND_GUIDANCE, file=stderr)
         return 1
 
@@ -267,6 +352,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("candidate_ids", nargs="+", help="candidate IDs to render")
     parser.add_argument("--wait", action="store_true", help="poll until render completion")
     parser.add_argument(
+        "--video-id",
+        help="persisted YouTube video ID used to find completed renders after JOB_NOT_FOUND",
+    )
+    parser.add_argument(
+        "--analysis-id",
+        help="persisted analysis ID used to find completed renders after JOB_NOT_FOUND",
+    )
+    parser.add_argument(
         "--force-render",
         action="store_true",
         help="render even when reusable artifacts already exist",
@@ -286,5 +379,7 @@ def main(argv: list[str] | None = None) -> int:
         [candidate_id.upper() for candidate_id in args.candidate_ids],
         wait=args.wait,
         force_render=args.force_render,
+        video_id=args.video_id,
+        analysis_id=args.analysis_id,
         settings=settings,
     )
