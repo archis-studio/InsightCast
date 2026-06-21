@@ -122,6 +122,16 @@ class FakeClock:
         self.value += seconds
 
 
+class FlushTrackingStdout(StringIO):
+    def __init__(self) -> None:
+        super().__init__()
+        self.flush_count = 0
+
+    def flush(self) -> None:
+        self.flush_count += 1
+        super().flush()
+
+
 def settings(**overrides: Any) -> Settings:
     return Settings(
         _env_file=None,
@@ -152,6 +162,19 @@ def execute(
         stderr=stderr,
     )
     return code, stdout.getvalue(), stderr.getvalue()
+
+
+def test_print_line_flushes_status_updates_immediately() -> None:
+    stdout = FlushTrackingStdout()
+
+    analyze._print_line(
+        stdout,
+        lambda: datetime(2026, 6, 7, 12, 0, 0),
+        "INGESTING: Downloading the source video.",
+    )
+
+    assert stdout.getvalue() == "[12:00:00] INGESTING: Downloading the source video.\n"
+    assert stdout.flush_count == 1
 
 
 def test_checks_healthy_api_before_creating_job() -> None:
@@ -520,34 +543,3 @@ def test_ctrl_c_stops_monitoring_and_retains_job_id() -> None:
     assert "Local monitoring stopped" in errors
     assert "API job may continue" in errors
     assert "job-123" in errors
-
-
-def test_cli_formats_render_stage_summary() -> None:
-    stdout = StringIO()
-    payload = {
-        "render_batches": [
-            {
-                "render_id": "render-1",
-                "status": "COMPLETED",
-                "stages": [
-                    {
-                        "stage": "translate_subtitles",
-                        "status": "completed",
-                        "resume_strategy": "reuse validated translation batches",
-                    },
-                    {
-                        "stage": "validate_render",
-                        "status": "completed",
-                        "resume_strategy": "render is publishable",
-                    },
-                ],
-            }
-        ]
-    }
-
-    analyze._print_render_stage_summary(payload, stdout=stdout)
-
-    output = stdout.getvalue()
-    assert "Render render-1: COMPLETED" in output
-    assert "translate_subtitles: completed" in output
-    assert "validate_render: completed" in output

@@ -59,6 +59,18 @@ def test_candidate_defaults_are_configurable() -> None:
     assert settings.default_max_duration_minutes == 9
 
 
+def test_subtitle_font_sizes_are_configurable() -> None:
+    settings = Settings(
+        _env_file=None,
+        openai_api_key="sk-test-value",
+        subtitle_chinese_font_size=84,
+        subtitle_english_font_size=68,
+    )
+
+    assert settings.subtitle_chinese_font_size == 84
+    assert settings.subtitle_english_font_size == 68
+
+
 def test_analysis_cli_settings_have_defaults() -> None:
     settings = Settings(_env_file=None, openai_api_key="sk-test-value")
 
@@ -69,6 +81,8 @@ def test_analysis_cli_settings_have_defaults() -> None:
     assert settings.openai_transcription_max_attempts == 3
     assert settings.openai_transcription_retry_sleep_seconds == 0
     assert settings.openai_retry_sleep_seconds == 10
+    assert settings.subtitle_chinese_font_size == 72
+    assert settings.subtitle_english_font_size == 60
 
 
 def test_analysis_cli_settings_load_environment_overrides(
@@ -80,6 +94,8 @@ def test_analysis_cli_settings_load_environment_overrides(
     monkeypatch.setenv("OPENAI_TRANSCRIPTION_MAX_ATTEMPTS", "5")
     monkeypatch.setenv("OPENAI_TRANSCRIPTION_RETRY_SLEEP_SECONDS", "1.5")
     monkeypatch.setenv("OPENAI_RETRY_SLEEP_SECONDS", "7.5")
+    monkeypatch.setenv("SUBTITLE_CHINESE_FONT_SIZE", "88")
+    monkeypatch.setenv("SUBTITLE_ENGLISH_FONT_SIZE", "70")
 
     settings = Settings(_env_file=None, openai_api_key="sk-test-value")
 
@@ -89,6 +105,8 @@ def test_analysis_cli_settings_load_environment_overrides(
     assert settings.openai_transcription_max_attempts == 5
     assert settings.openai_transcription_retry_sleep_seconds == 1.5
     assert settings.openai_retry_sleep_seconds == 7.5
+    assert settings.subtitle_chinese_font_size == 88
+    assert settings.subtitle_english_font_size == 70
 
 
 def test_ytdlp_js_runtime_can_be_disabled() -> None:
@@ -115,6 +133,8 @@ def test_ytdlp_js_runtime_can_be_disabled() -> None:
         ("openai_transcription_max_attempts", 0),
         ("openai_transcription_retry_sleep_seconds", -1),
         ("openai_retry_sleep_seconds", -1),
+        ("subtitle_chinese_font_size", 0),
+        ("subtitle_english_font_size", 0),
     ],
 )
 def test_settings_reject_invalid_ranges_and_empty_models(field: str, value: object) -> None:

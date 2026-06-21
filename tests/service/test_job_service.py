@@ -335,6 +335,23 @@ class FakePublish:
         )
 
 
+class BlockingCutClip(FakeClip):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def cut_clip(
+        self,
+        source_video: Path,
+        selection: Candidate,
+        work_dir: Path,
+    ) -> Path:
+        self.started.set()
+        await self.release.wait()
+        return await super().cut_clip(source_video, selection, work_dir)
+
+
 def make_service(tmp_path: Path) -> tuple[JobService, FakeCurator, FakeClip]:
     curator = FakeCurator()
     clip = FakeClip()
@@ -845,6 +862,34 @@ async def test_candidate_render_writes_stage_manifest(tmp_path: Path) -> None:
     ]
     assert all(stage["status"] == "completed" for stage in payload["stages"])
     assert payload["stages"][0]["artifacts"] == {}
+
+
+@pytest.mark.asyncio
+async def test_candidate_render_writes_running_stage_manifest(tmp_path: Path) -> None:
+    service, _, _ = make_service(tmp_path)
+    blocking_clip = BlockingCutClip()
+    service.clip_engine = blocking_clip
+    job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+    await service.process(await service.queue.get())
+
+    batch = await service.create_render(
+        job.job_id,
+        CandidateSelectionRequest(candidate_ids="A", force_render=True),
+    )
+    work = await service.queue.get()
+    task = asyncio.create_task(service.process(work))
+    try:
+        await asyncio.wait_for(blocking_clip.started.wait(), timeout=1)
+        stage_manifest_path = batch.output_dir / "stage-manifest.json"
+        assert stage_manifest_path.is_file()
+        payload = json.loads(stage_manifest_path.read_text(encoding="utf-8"))
+        assert payload["stages"][-1]["stage"] == "cut_clip"
+        assert payload["stages"][-1]["status"] == "running"
+        assert payload["stages"][-1]["started_at"] is not None
+        assert blocking_clip.calls == []
+    finally:
+        blocking_clip.release.set()
+        await task
 
 
 @pytest.mark.asyncio

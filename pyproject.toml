@@ -35,6 +35,7 @@ dev = [
 cast_api = "insightcast.api.app:run"
 cast_analyze = "insightcast.cli.analyze:main"
 cast_cache = "insightcast.cli.cache:main"
+cast_render = "insightcast.cli.render:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/insightcast"]

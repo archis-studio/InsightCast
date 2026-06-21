@@ -1,7 +1,14 @@
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from insightcast.engines.lingo_engine import SubtitleItem
 from insightcast.utils.timecode import format_ass_time
+
+
+@dataclass(frozen=True)
+class BilingualAssStyle:
+    chinese_font_size: int = 72
+    english_font_size: int = 60
 
 
 def _escape_ass_text(value: str) -> str:
@@ -15,7 +22,13 @@ def _escape_ass_text(value: str) -> str:
     )
 
 
-def serialize_bilingual_ass(items: Sequence[SubtitleItem], *, title: str) -> str:
+def serialize_bilingual_ass(
+    items: Sequence[SubtitleItem],
+    *,
+    title: str,
+    style: BilingualAssStyle | None = None,
+) -> str:
+    resolved_style = style or BilingualAssStyle()
     style_fields = (
         "Name",
         "Fontname",
@@ -44,7 +57,7 @@ def serialize_bilingual_ass(items: Sequence[SubtitleItem], *, title: str) -> str
     chinese_style = (
         "TraditionalChinese",
         "PingFang TC",
-        "58",
+        str(resolved_style.chinese_font_size),
         "&H0082E0FF",
         "&H000000FF",
         "&H00101010",
@@ -69,7 +82,7 @@ def serialize_bilingual_ass(items: Sequence[SubtitleItem], *, title: str) -> str
     english_style = (
         "English",
         "Arial",
-        "54",
+        str(resolved_style.english_font_size),
         "&H00FFFFFF",
         "&H000000FF",
         "&H00101010",

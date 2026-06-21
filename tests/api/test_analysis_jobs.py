@@ -186,7 +186,7 @@ def test_render_batch_response_includes_stage_manifest(tmp_path: Path) -> None:
     assert body["render_batches"][0]["stages"][0]["stage"] == "validate_render"
 
 
-def test_analysis_route_passes_force_render_flags_to_service(tmp_path: Path) -> None:
+def test_analysis_route_passes_force_render_flag_to_service(tmp_path: Path) -> None:
     client, service = make_client(tmp_path)
     with client:
         response = client.post(
@@ -194,8 +194,6 @@ def test_analysis_route_passes_force_render_flags_to_service(tmp_path: Path) -> 
             json={
                 "candidate_ids": ["A", "C"],
                 "force_render": True,
-                "force_translate": True,
-                "force_metadata": True,
             },
         )
 
@@ -203,8 +201,6 @@ def test_analysis_route_passes_force_render_flags_to_service(tmp_path: Path) -> 
     request = service.render_requests[0]
     assert request.candidate_ids == ["A", "C"]
     assert request.force_render is True
-    assert request.force_translate is True
-    assert request.force_metadata is True
 
 
 def test_analysis_route_uses_configured_defaults_for_omitted_fields(tmp_path: Path) -> None:

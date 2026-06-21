@@ -19,25 +19,22 @@ Use the repository CLI as the canonical way to analyze a YouTube URL.
 
 ## Candidate Render Workflow
 
-Use the API render endpoint only after the user explicitly asks to render a
-candidate.
+Use the repository CLI as the canonical way to render a candidate, only after
+the user explicitly asks to render.
 
 1. Do not start or stop the API server as part of rendering.
 2. Reuse the existing analysis job ID from the completed analysis whenever it is
    still available in the running server process.
-3. Queue only the requested candidate IDs:
+3. From the repository root, render only the requested candidate IDs:
 
    ```bash
-   curl -sS -X POST \
-     http://127.0.0.1:8765/api/v1/analysis-jobs/ANALYSIS_JOB_ID/renders \
-     -H 'Content-Type: application/json' \
-     -d '{"candidate_ids":["B"],"force_render":false}'
+   uv run cast_render ANALYSIS_JOB_ID B --wait
    ```
 
-4. Poll render status with:
+4. Use `--force-render` only when the user explicitly requests a fresh render:
 
    ```bash
-   curl -sS http://127.0.0.1:8765/api/v1/analysis-jobs/ANALYSIS_JOB_ID/renders
+   uv run cast_render ANALYSIS_JOB_ID B --wait --force-render
    ```
 
 5. Treat `COMPLETED` as successful render completion. Confirm the candidate
@@ -50,5 +47,5 @@ candidate.
    `burn_subtitles`, `generate_metadata`, and `validate_render`.
 8. Verify the rendered MP4 with `ffprobe` when available, and report duration and
    size.
-9. On failure, report the API error, inspect `stage-manifest.json`, and inspect
+9. On failure, report the CLI/API error, inspect `stage-manifest.json`, and inspect
    the operation log for the failed stage and traceback.

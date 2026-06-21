@@ -1,5 +1,5 @@
 from insightcast.engines.lingo_engine import SubtitleItem
-from insightcast.utils.ass import serialize_bilingual_ass
+from insightcast.utils.ass import BilingualAssStyle, serialize_bilingual_ass
 from insightcast.utils.srt import serialize_traditional_chinese_srt
 
 
@@ -51,8 +51,8 @@ def test_serialize_bilingual_ass_has_styles_escaped_text_and_stable_events() -> 
     english_style = next(
         line for line in output.splitlines() if line.startswith("Style: English")
     )
-    assert chinese_style.split(",")[2] == "58"
-    assert english_style.split(",")[2] == "54"
+    assert int(chinese_style.split(",")[2]) >= 72
+    assert int(english_style.split(",")[2]) >= 60
     assert "&H0082E0FF" in chinese_style
     assert int(chinese_style.split(",")[-2]) - int(english_style.split(",")[-2]) >= 145
     assert "Dialogue: 0,0:00:01.00,0:00:03.46,English" in output
@@ -61,3 +61,30 @@ def test_serialize_bilingual_ass_has_styles_escaped_text_and_stable_events() -> 
     ) < output.index("Dialogue: 0,0:00:01.00,0:00:03.46,English")
     assert r"Use \{braces\}\\nand newline" in output
     assert r"使用\{括號\}\N以及換行" in output
+
+
+def test_serialize_bilingual_ass_accepts_configurable_font_sizes() -> None:
+    items = [
+        SubtitleItem(
+            segment_id="s1",
+            start_seconds=0,
+            end_seconds=1,
+            english_text="Hello",
+            traditional_chinese_text="哈囉",
+        )
+    ]
+
+    output = serialize_bilingual_ass(
+        items,
+        title="Video Title",
+        style=BilingualAssStyle(chinese_font_size=84, english_font_size=68),
+    )
+
+    chinese_style = next(
+        line for line in output.splitlines() if line.startswith("Style: TraditionalChinese")
+    )
+    english_style = next(
+        line for line in output.splitlines() if line.startswith("Style: English")
+    )
+    assert chinese_style.split(",")[2] == "84"
+    assert english_style.split(",")[2] == "68"

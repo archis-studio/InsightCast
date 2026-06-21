@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict
 
 from insightcast.domain.models import Candidate, TranscriptSegment
 from insightcast.engines.lingo_engine import SubtitleItem
-from insightcast.utils.ass import serialize_bilingual_ass
+from insightcast.utils.ass import BilingualAssStyle, serialize_bilingual_ass
 from insightcast.utils.srt import serialize_traditional_chinese_srt
 
 
@@ -18,9 +18,16 @@ class ClipArtifacts(BaseModel):
 
 
 class ClipEngine:
-    def __init__(self, *, ffmpeg: Any, lingo: Any) -> None:
+    def __init__(
+        self,
+        *,
+        ffmpeg: Any,
+        lingo: Any,
+        subtitle_style: BilingualAssStyle | None = None,
+    ) -> None:
         self.ffmpeg = ffmpeg
         self.lingo = lingo
+        self.subtitle_style = subtitle_style or BilingualAssStyle()
 
     async def cut_clip(self, source_video: Path, selection: Candidate, work_dir: Path) -> Path:
         resolved_work_dir = work_dir.expanduser().resolve()
@@ -61,7 +68,11 @@ class ClipEngine:
             newline="\n",
         )
         ass_path.write_text(
-            serialize_bilingual_ass(subtitle_items, title=selection.suggested_title),
+            serialize_bilingual_ass(
+                subtitle_items,
+                title=selection.suggested_title,
+                style=self.subtitle_style,
+            ),
             encoding="utf-8",
             newline="\n",
         )

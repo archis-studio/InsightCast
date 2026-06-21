@@ -547,6 +547,16 @@ class JobService:
                     if segment.end_seconds > candidate.start_seconds
                     and segment.start_seconds < candidate.end_seconds
                 ]
+                stage_manifest = self._start_stage_record(
+                    render_dir=candidate_dir,
+                    manifest=stage_manifest,
+                    stage=PipelineStage.CUT_CLIP,
+                    resume_strategy=(
+                        "rerun cut_clip unless a completed render manifest "
+                        "can be reused"
+                    ),
+                    fresh=True,
+                )
                 temporary_clip = await self._run_stage(
                     job,
                     PipelineStage.CUT_CLIP.value,
@@ -556,18 +566,18 @@ class JobService:
                         self.work_root / job.job_id / batch.render_id,
                     ),
                 )
-                stage_manifest = self._append_stage_record(
+                stage_manifest = self._finish_stage_record(
                     render_dir=candidate_dir,
                     manifest=stage_manifest,
-                    record=StageRecord(
-                        stage=PipelineStage.CUT_CLIP,
-                        status=StageStatus.COMPLETED,
-                        resume_strategy=(
-                            "rerun cut_clip unless a completed render manifest "
-                            "can be reused"
-                        ),
-                        fresh=True,
-                    ),
+                    stage=PipelineStage.CUT_CLIP,
+                    status=StageStatus.COMPLETED,
+                )
+                stage_manifest = self._start_stage_record(
+                    render_dir=candidate_dir,
+                    manifest=stage_manifest,
+                    stage=PipelineStage.TRANSLATE_SUBTITLES,
+                    resume_strategy="reuse validated translation batches",
+                    fresh=True,
                 )
                 subtitle_items = await self._run_stage(
                     job,
@@ -577,15 +587,18 @@ class JobService:
                         candidate,
                     ),
                 )
-                stage_manifest = self._append_stage_record(
+                stage_manifest = self._finish_stage_record(
                     render_dir=candidate_dir,
                     manifest=stage_manifest,
-                    record=StageRecord(
-                        stage=PipelineStage.TRANSLATE_SUBTITLES,
-                        status=StageStatus.COMPLETED,
-                        resume_strategy="reuse validated translation batches",
-                        fresh=True,
-                    ),
+                    stage=PipelineStage.TRANSLATE_SUBTITLES,
+                    status=StageStatus.COMPLETED,
+                )
+                stage_manifest = self._start_stage_record(
+                    render_dir=candidate_dir,
+                    manifest=stage_manifest,
+                    stage=PipelineStage.WRITE_SUBTITLES,
+                    resume_strategy="reuse subtitle files when translation batches match",
+                    fresh=True,
                 )
                 srt_path, ass_path = await self._run_stage(
                     job,
@@ -599,18 +612,22 @@ class JobService:
                         candidate_dir,
                     ),
                 )
-                stage_manifest = self._append_stage_record(
+                stage_manifest = self._finish_stage_record(
                     render_dir=candidate_dir,
                     manifest=stage_manifest,
-                    record=StageRecord(
-                        stage=PipelineStage.WRITE_SUBTITLES,
-                        status=StageStatus.COMPLETED,
-                        resume_strategy=(
-                            "reuse subtitle files when translation batches match"
-                        ),
-                        artifacts={"srt": srt_path, "ass": ass_path},
-                        fresh=True,
+                    stage=PipelineStage.WRITE_SUBTITLES,
+                    status=StageStatus.COMPLETED,
+                    artifacts={"srt": srt_path, "ass": ass_path},
+                )
+                stage_manifest = self._start_stage_record(
+                    render_dir=candidate_dir,
+                    manifest=stage_manifest,
+                    stage=PipelineStage.BURN_SUBTITLES,
+                    resume_strategy=(
+                        "reuse burned video when subtitle files and source "
+                        "fingerprint match"
                     ),
+                    fresh=True,
                 )
                 burned_path = await self._run_stage(
                     job,
@@ -624,22 +641,22 @@ class JobService:
                     ),
                 )
                 temporary_clip.unlink(missing_ok=True)
-                stage_manifest = self._append_stage_record(
+                stage_manifest = self._finish_stage_record(
                     render_dir=candidate_dir,
                     manifest=stage_manifest,
-                    record=StageRecord(
-                        stage=PipelineStage.BURN_SUBTITLES,
-                        status=StageStatus.COMPLETED,
-                        resume_strategy=(
-                            "reuse burned video when subtitle files and source "
-                            "fingerprint match"
-                        ),
-                        artifacts={"video": burned_path},
-                        fresh=True,
-                    ),
+                    stage=PipelineStage.BURN_SUBTITLES,
+                    status=StageStatus.COMPLETED,
+                    artifacts={"video": burned_path},
                 )
                 metadata_path = candidate_dir / "youtube-metadata.json"
                 excerpt = self._transcript_excerpt(transcript, candidate)
+                stage_manifest = self._start_stage_record(
+                    render_dir=candidate_dir,
+                    manifest=stage_manifest,
+                    stage=PipelineStage.GENERATE_METADATA,
+                    resume_strategy="reuse generated metadata",
+                    fresh=True,
+                )
                 await self._run_stage(
                     job,
                     PipelineStage.GENERATE_METADATA.value,
@@ -652,16 +669,19 @@ class JobService:
                         destination=metadata_path,
                     ),
                 )
-                stage_manifest = self._append_stage_record(
+                stage_manifest = self._finish_stage_record(
                     render_dir=candidate_dir,
                     manifest=stage_manifest,
-                    record=StageRecord(
-                        stage=PipelineStage.GENERATE_METADATA,
-                        status=StageStatus.COMPLETED,
-                        resume_strategy="reuse generated metadata",
-                        artifacts={"youtube_metadata": metadata_path},
-                        fresh=True,
-                    ),
+                    stage=PipelineStage.GENERATE_METADATA,
+                    status=StageStatus.COMPLETED,
+                    artifacts={"youtube_metadata": metadata_path},
+                )
+                stage_manifest = self._start_stage_record(
+                    render_dir=candidate_dir,
+                    manifest=stage_manifest,
+                    stage=PipelineStage.VALIDATE_RENDER,
+                    resume_strategy="render is publishable; reuse ready render by default",
+                    fresh=True,
                 )
                 await self._run_stage(
                     job,
@@ -675,17 +695,11 @@ class JobService:
                         subtitle_items=subtitle_items,
                     ),
                 )
-                self._append_stage_record(
+                self._finish_stage_record(
                     render_dir=candidate_dir,
                     manifest=stage_manifest,
-                    record=StageRecord(
-                        stage=PipelineStage.VALIDATE_RENDER,
-                        status=StageStatus.COMPLETED,
-                        resume_strategy=(
-                            "render is publishable; reuse ready render by default"
-                        ),
-                        fresh=True,
-                    ),
+                    stage=PipelineStage.VALIDATE_RENDER,
+                    status=StageStatus.COMPLETED,
                 )
                 render = self.video_store.write_render(
                     video_id=job.video_id,
@@ -724,19 +738,18 @@ class JobService:
                     render_id=batch.render_id,
                     candidate_id=candidate_id,
                 )
-                self._append_stage_record(
+                failed_pipeline_stage = (
+                    PipelineStage(failed_stage)
+                    if failed_stage in {stage.value for stage in PipelineStage}
+                    else PipelineStage.SOURCE_INGESTION
+                )
+                self._finish_stage_record(
                     render_dir=candidate_dir,
                     manifest=stage_manifest,
-                    record=StageRecord(
-                        stage=(
-                            PipelineStage(failed_stage)
-                            if failed_stage in {stage.value for stage in PipelineStage}
-                            else PipelineStage.SOURCE_INGESTION
-                        ),
-                        status=StageStatus.FAILED,
-                        resume_strategy=f"rerun render to resume from {failed_stage}",
-                        error=error,
-                    ),
+                    stage=failed_pipeline_stage,
+                    status=StageStatus.FAILED,
+                    error=error,
+                    resume_strategy=f"rerun render to resume from {failed_stage}",
                 )
                 log_task_failure(job, error)
                 self.video_store.write_render(
@@ -1200,6 +1213,71 @@ class JobService:
         manifest.stages.append(record)
         self.stage_store.write(self._stage_manifest_path(render_dir), manifest)
         return manifest
+
+    def _start_stage_record(
+        self,
+        *,
+        render_dir: Path,
+        manifest: StageManifest,
+        stage: PipelineStage,
+        resume_strategy: str,
+        fresh: bool,
+        reused: bool = False,
+    ) -> StageManifest:
+        return self._append_stage_record(
+            render_dir=render_dir,
+            manifest=manifest,
+            record=StageRecord(
+                stage=stage,
+                status=StageStatus.RUNNING,
+                started_at=self.clock(),
+                resume_strategy=resume_strategy,
+                fresh=fresh,
+                reused=reused,
+            ),
+        )
+
+    def _finish_stage_record(
+        self,
+        *,
+        render_dir: Path,
+        manifest: StageManifest,
+        stage: PipelineStage,
+        status: StageStatus,
+        artifacts: dict[str, Path] | None = None,
+        error: JobError | None = None,
+        resume_strategy: str | None = None,
+    ) -> StageManifest:
+        completed_at = self.clock()
+        for record in reversed(manifest.stages):
+            if record.stage == stage and record.status is StageStatus.RUNNING:
+                record.status = status
+                record.completed_at = completed_at
+                if record.started_at is not None:
+                    record.elapsed_seconds = (
+                        completed_at - record.started_at
+                    ).total_seconds()
+                if artifacts is not None:
+                    record.artifacts = artifacts
+                record.error = error
+                if resume_strategy is not None:
+                    record.resume_strategy = resume_strategy
+                self.stage_store.write(self._stage_manifest_path(render_dir), manifest)
+                return manifest
+        return self._append_stage_record(
+            render_dir=render_dir,
+            manifest=manifest,
+            record=StageRecord(
+                stage=stage,
+                status=status,
+                completed_at=completed_at,
+                artifacts=artifacts or {},
+                resume_strategy=(
+                    resume_strategy or f"rerun render to resume from {stage.value}"
+                ),
+                error=error,
+            ),
+        )
 
     def _finalize_provisional_output(
         self,

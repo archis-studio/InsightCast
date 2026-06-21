@@ -5,6 +5,7 @@ import pytest
 from insightcast.domain.models import Candidate, TranscriptSegment
 from insightcast.engines.clip_engine import ClipEngine
 from insightcast.engines.lingo_engine import SubtitleItem
+from insightcast.utils.ass import BilingualAssStyle
 
 
 class FakeFfmpeg:
@@ -135,3 +136,30 @@ async def test_clip_engine_exposes_individual_render_steps(tmp_path) -> None:
     assert srt == output_dir / "subtitles.zh-TW.srt"
     assert ass == output_dir / "subtitles.bilingual.ass"
     assert burned == output_dir / "video.mp4"
+
+
+def test_clip_engine_writes_configured_ass_font_sizes(tmp_path: Path) -> None:
+    engine = ClipEngine(
+        ffmpeg=FakeFfmpeg(),
+        lingo=FakeLingo(),
+        subtitle_style=BilingualAssStyle(chinese_font_size=84, english_font_size=68),
+    )
+    output_dir = tmp_path / "render"
+
+    _, ass = engine.write_subtitles(
+        [
+            SubtitleItem(
+                segment_id="s1",
+                start_seconds=0,
+                end_seconds=1,
+                english_text="Hello",
+                traditional_chinese_text="哈囉",
+            )
+        ],
+        candidate(),
+        output_dir,
+    )
+
+    ass_text = ass.read_text(encoding="utf-8")
+    assert "Style: TraditionalChinese,PingFang TC,84," in ass_text
+    assert "Style: English,Arial,68," in ass_text

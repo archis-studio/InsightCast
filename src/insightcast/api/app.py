@@ -34,6 +34,7 @@ from insightcast.services.job_service import JobService
 from insightcast.services.queue_worker import QueueWorker
 from insightcast.storage.file_job_writer import FileJobWriter
 from insightcast.storage.video_store import VideoStore
+from insightcast.utils.ass import BilingualAssStyle
 
 
 def _server_log_config() -> dict[str, Any]:
@@ -94,7 +95,14 @@ def _build_runtime(settings: Settings) -> tuple[JobService, FfmpegClient]:
             client=structured,
             model=settings.effective_curator_model,
         ),
-        clip_engine=ClipEngine(ffmpeg=ffmpeg, lingo=lingo),
+        clip_engine=ClipEngine(
+            ffmpeg=ffmpeg,
+            lingo=lingo,
+            subtitle_style=BilingualAssStyle(
+                chinese_font_size=settings.subtitle_chinese_font_size,
+                english_font_size=settings.subtitle_english_font_size,
+            ),
+        ),
         publish_engine=PublishEngine(
             client=structured,
             model=settings.effective_metadata_model,

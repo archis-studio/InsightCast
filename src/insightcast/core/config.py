@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     ytdlp_js_runtime: str | None = "node"
     video_max_height: int = Field(default=1080, ge=1, le=4320)
     video_crf: int = Field(default=18, ge=0, le=51)
+    subtitle_chinese_font_size: int = Field(default=72, ge=1, le=300)
+    subtitle_english_font_size: int = Field(default=60, ge=1, le=300)
     openai_timeout_seconds: float = Field(default=120, gt=0)
     openai_max_retries: int = Field(default=2, ge=0, le=10)
     openai_retry_sleep_seconds: float = Field(default=10, ge=0)
