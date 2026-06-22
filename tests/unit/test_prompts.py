@@ -143,7 +143,7 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
     payload = json.loads(prompt)
     system = metadata.SYSTEM_PROMPT.lower()
 
-    assert metadata.PROMPT_VERSION == "metadata-v4"
+    assert metadata.PROMPT_VERSION == "metadata-v5"
     assert "traditional chinese" in system
     assert "youtube metadata" in system
     assert "translated highlight" in system
@@ -166,10 +166,25 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
         ],
     }
     assert payload["title_strategy"] == [
-        "lead_with_viewer_outcome_or_core_tension",
-        "name_the_specific_idea_not_the_whole_episode",
+        "choose_the_title_frame_that_best_fits_the_clip",
+        "lead_with_a_specific_idea_risk_gain_or_tension",
+        "make_the_viewer_feel_the_practical_stakes",
+        "keep_one_clear_hook_without_clickbait",
         "use_one_source_anchor_for_trust_when_helpful",
-        "make_it_clickable_without_sounding_like_clickbait",
+    ]
+    assert payload["title_frame_options"] == [
+        "focal_point_colon_narrative",
+        "risk_or_cost_warning",
+        "benefit_or_capability_gain",
+        "counterintuitive_claim",
+        "specific_question",
+        "source_anchor_plus_clip_value",
+    ]
+    assert payload["title_diversity_guidance"] == [
+        "do_not_force_every_video_into_the_same_structure",
+        "vary_rhythm_between_colon_question_warning_and_direct_claim_when_supported",
+        "generic_framing_like_這段影片_or_作者說_is_allowed_only_when_it_sounds_natural",
+        "avoid_machine_translated_symmetry_or_formulaic_parallel_phrasing",
     ]
     assert payload["description_strategy"] == [
         "opening_hook_for_target_viewer",
@@ -181,8 +196,9 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
     ]
     assert payload["title_quality_bar"] == [
         "specific_enough_to_stand_without_the_original_title",
-        "short_enough_for_mobile_scanning",
-        "no_generic_prefix_like_影片主張_or_這段精華",
+        "aim_for_50_to_70_readable_characters_under_youtube_100_character_limit",
+        "audience_can_sense_what_to_gain_or_avoid",
+        "fresh_and_human_not_template_repeated",
         "no_unsupported_superlatives_or_guarantees",
     ]
 
@@ -196,7 +212,7 @@ def test_metadata_prompt_preserves_source_title_equity_for_highlight_metadata() 
     payload = json.loads(prompt)
     system = metadata.SYSTEM_PROMPT.lower()
 
-    assert metadata.PROMPT_VERSION == "metadata-v4"
+    assert metadata.PROMPT_VERSION == "metadata-v5"
     assert "source title" in system
     assert "highlight" in system
     assert "traditional chinese title" in system
@@ -213,7 +229,8 @@ def test_metadata_prompt_preserves_source_title_equity_for_highlight_metadata() 
         "for Traditional Chinese viewers, not as a replacement for the full original video."
     )
     assert payload["title_style_examples"] == [
-        "讓簡報被記住的關鍵：Vision、Contribution 與強收尾｜How to Speak",
+        "AI 認知外包：你省下時間，也可能交出判斷力",
+        "為什麼你越用 AI 越不會思考？MIT 研究給了一個警訊",
         "別再只改 Prompt：Karpathy 的三層 AI 工作法",
     ]
     assert payload["description_structure"] == [
