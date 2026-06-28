@@ -5,7 +5,11 @@ from typing import Any
 
 from insightcast.core.exceptions import InsightCastError
 from insightcast.domain.enums import ErrorCode
-from insightcast.domain.models import Transcript, TranscriptSegment
+from insightcast.domain.models import Transcript
+from insightcast.infrastructure.transcription.base import (
+    build_valid_transcript_segment,
+    require_transcript_quality,
+)
 
 ModelLoader = Callable[[str, str], Any]
 
@@ -76,16 +80,19 @@ class LocalWhisperClient:
                 details={"detected_language": language},
                 stage="transcribing",
             )
-        segments = [
-            TranscriptSegment(
+        segments = []
+        for index, segment in enumerate(segments_source):
+            transcript_segment = build_valid_transcript_segment(
                 segment_id=str(getattr(segment, "id", index)),
                 start_seconds=float(segment.start),
                 end_seconds=float(segment.end),
-                text=str(segment.text).strip(),
+                text=str(segment.text),
             )
-            for index, segment in enumerate(segments_source)
-        ]
+            if transcript_segment is not None:
+                segments.append(transcript_segment)
         duration = float(getattr(info, "duration", 0) or 0)
         if segments:
             duration = max(duration, segments[-1].end_seconds)
-        return Transcript(language="en", duration_seconds=duration, segments=segments)
+        return require_transcript_quality(
+            Transcript(language="en", duration_seconds=duration, segments=segments)
+        )

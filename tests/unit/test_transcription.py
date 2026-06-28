@@ -117,6 +117,95 @@ async def test_openai_transcription_merges_chunk_segments_with_offsets(tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_openai_transcription_skips_empty_segments(tmp_path: Path) -> None:
+    chunk = tmp_path / "part.mp3"
+    chunk.write_bytes(b"audio")
+    transcriptions = FakeTranscriptions(
+        [
+            SimpleNamespace(
+                language="en",
+                duration=5,
+                segments=[
+                    SimpleNamespace(id=0, start=1, end=2, text="Valid"),
+                    SimpleNamespace(id=1, start=2, end=3, text="   "),
+                    SimpleNamespace(id=2, start=4, end=4, text=""),
+                    SimpleNamespace(id=3, start=4, end=4, text="Zero duration"),
+                ],
+            )
+        ]
+    )
+    client = OpenAITranscriptionClient(
+        transcriptions,
+        chunker=lambda *_: [AudioChunk(path=chunk, offset_seconds=0)],
+    )
+
+    transcript = await client.transcribe(tmp_path / "audio.mp3")
+
+    actual_segments = [
+        (item.segment_id, item.start_seconds, item.end_seconds, item.text)
+        for item in transcript.segments
+    ]
+
+    assert actual_segments == [
+        ("0-0", 1, 2, "Valid")
+    ]
+    assert transcript.duration_seconds == 5
+
+
+@pytest.mark.asyncio
+async def test_openai_transcription_rejects_empty_transcript(tmp_path: Path) -> None:
+    chunk = tmp_path / "part.mp3"
+    chunk.write_bytes(b"audio")
+    transcriptions = FakeTranscriptions(
+        [
+            SimpleNamespace(
+                language="en",
+                duration=120,
+                segments=[
+                    SimpleNamespace(id=0, start=1, end=2, text=" "),
+                    SimpleNamespace(id=1, start=3, end=3, text="Zero duration"),
+                ],
+            )
+        ]
+    )
+    client = OpenAITranscriptionClient(
+        transcriptions,
+        chunker=lambda *_: [AudioChunk(path=chunk, offset_seconds=0)],
+    )
+
+    with pytest.raises(InsightCastError) as exc_info:
+        await client.transcribe(tmp_path / "audio.mp3")
+
+    assert exc_info.value.error_code == ErrorCode.TRANSCRIPTION_FAILED
+    assert exc_info.value.details["reason"] == "transcript_contains_no_valid_segments"
+
+
+@pytest.mark.asyncio
+async def test_openai_transcription_rejects_sparse_long_transcript(tmp_path: Path) -> None:
+    chunk = tmp_path / "part.mp3"
+    chunk.write_bytes(b"audio")
+    transcriptions = FakeTranscriptions(
+        [
+            SimpleNamespace(
+                language="en",
+                duration=200,
+                segments=[SimpleNamespace(id=0, start=1, end=2, text="Too little")],
+            )
+        ]
+    )
+    client = OpenAITranscriptionClient(
+        transcriptions,
+        chunker=lambda *_: [AudioChunk(path=chunk, offset_seconds=0)],
+    )
+
+    with pytest.raises(InsightCastError) as exc_info:
+        await client.transcribe(tmp_path / "audio.mp3")
+
+    assert exc_info.value.error_code == ErrorCode.TRANSCRIPTION_FAILED
+    assert exc_info.value.details["reason"] == "transcript_coverage_too_low"
+
+
+@pytest.mark.asyncio
 async def test_openai_transcription_rejects_non_english_audio(tmp_path: Path) -> None:
     chunk = tmp_path / "part.mp3"
     chunk.write_bytes(b"audio")
@@ -235,8 +324,16 @@ async def test_openai_transcription_emits_machine_readable_progress_events(
     transcriptions = FakeTranscriptions(
         [
             TimeoutError("Request timed out."),
-            SimpleNamespace(language="en", duration=2, segments=[]),
-            SimpleNamespace(language="en", duration=3, segments=[]),
+            SimpleNamespace(
+                language="en",
+                duration=2,
+                segments=[SimpleNamespace(id=0, start=0, end=1, text="First")],
+            ),
+            SimpleNamespace(
+                language="en",
+                duration=3,
+                segments=[SimpleNamespace(id=0, start=0, end=1, text="Second")],
+            ),
         ]
     )
     events: list[dict[str, object]] = []
@@ -293,3 +390,30 @@ async def test_local_whisper_loads_model_lazily_and_maps_segments(tmp_path: Path
 
     assert loads == [("small", "cpu")]
     assert transcript.segments[0].text == "Local"
+
+
+@pytest.mark.asyncio
+async def test_local_whisper_skips_invalid_segments(tmp_path: Path) -> None:
+    class FakeModel:
+        def transcribe(self, path: str, **kwargs: object) -> tuple[list[object], object]:
+            return (
+                [
+                    SimpleNamespace(id=0, start=1, end=2, text="Valid"),
+                    SimpleNamespace(id=1, start=2, end=3, text=" "),
+                    SimpleNamespace(id=2, start=4, end=4, text="Zero duration"),
+                ],
+                SimpleNamespace(language="en", duration=5),
+            )
+
+    client = LocalWhisperClient(
+        model_size="small",
+        device="cpu",
+        model_loader=lambda *_: FakeModel(),
+    )
+
+    transcript = await client.transcribe(tmp_path / "audio.mp3")
+
+    assert [
+        (item.segment_id, item.start_seconds, item.end_seconds, item.text)
+        for item in transcript.segments
+    ] == [("0", 1, 2, "Valid")]

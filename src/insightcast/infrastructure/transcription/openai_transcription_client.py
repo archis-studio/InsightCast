@@ -12,7 +12,11 @@ from typing import Any
 from insightcast.core.exceptions import InsightCastError
 from insightcast.domain.enums import ErrorCode
 from insightcast.domain.models import Transcript, TranscriptSegment
-from insightcast.infrastructure.transcription.base import AudioChunk
+from insightcast.infrastructure.transcription.base import (
+    AudioChunk,
+    build_valid_transcript_segment,
+    require_transcript_quality,
+)
 
 Chunker = Callable[[Path, int], list[AudioChunk]]
 ProgressSink = Callable[[dict[str, Any]], None]
@@ -188,15 +192,16 @@ class OpenAITranscriptionClient:
             for segment in _value(response, "segments", []) or []:
                 start = chunk.offset_seconds + float(_value(segment, "start"))
                 end = chunk.offset_seconds + float(_value(segment, "end"))
-                duration_seconds = max(duration_seconds, end)
-                segments.append(
-                    TranscriptSegment(
-                        segment_id=f"{chunk_index}-{_value(segment, 'id', len(segments))}",
-                        start_seconds=start,
-                        end_seconds=end,
-                        text=str(_value(segment, "text", "")).strip(),
-                    )
+                transcript_segment = build_valid_transcript_segment(
+                    segment_id=f"{chunk_index}-{_value(segment, 'id', len(segments))}",
+                    start_seconds=start,
+                    end_seconds=end,
+                    text=_value(segment, "text", ""),
                 )
+                if transcript_segment is None:
+                    continue
+                duration_seconds = max(duration_seconds, end)
+                segments.append(transcript_segment)
             processed_chunks += 1
         self._emit_progress(
             "completed_all",
@@ -206,10 +211,12 @@ class OpenAITranscriptionClient:
             segment_count=len(segments),
             duration_seconds=duration_seconds,
         )
-        return Transcript(
-            language="en",
-            duration_seconds=duration_seconds,
-            segments=segments,
+        return require_transcript_quality(
+            Transcript(
+                language="en",
+                duration_seconds=duration_seconds,
+                segments=segments,
+            )
         )
 
     def _checkpoint_dir(self, audio_path: Path) -> Path:
