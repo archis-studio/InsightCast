@@ -7,7 +7,7 @@ from insightcast.domain.enums import ErrorCode
 from insightcast.domain.models import TranscriptSegment
 from insightcast.prompts import translation as translation_prompt
 
-TRANSLATION_BATCH_SIZE = 40
+TRANSLATION_BATCH_SIZE = 24
 
 
 class LingoModel(BaseModel):

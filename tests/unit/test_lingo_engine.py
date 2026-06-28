@@ -55,9 +55,10 @@ async def test_translate_clip_batches_long_requests_in_source_order() -> None:
     ]
     client = RecordingTranslationClient(
         [
-            translation_response(*[f"s{index}" for index in range(0, 40)]),
-            translation_response(*[f"s{index}" for index in range(40, 80)]),
-            translation_response(*[f"s{index}" for index in range(80, 85)]),
+            translation_response(*[f"s{index}" for index in range(0, 24)]),
+            translation_response(*[f"s{index}" for index in range(24, 48)]),
+            translation_response(*[f"s{index}" for index in range(48, 72)]),
+            translation_response(*[f"s{index}" for index in range(72, 85)]),
         ]
     )
 
@@ -67,11 +68,11 @@ async def test_translate_clip_batches_long_requests_in_source_order() -> None:
         clip_end_seconds=85,
     )
 
-    assert len(client.calls) == 3
+    assert len(client.calls) == 4
     assert [
         len(json.loads(str(call["user_prompt"]))["items"])
         for call in client.calls
-    ] == [40, 40, 5]
+    ] == [24, 24, 24, 13]
     assert [item.segment_id for item in result] == [
         f"s{index}" for index in range(85)
     ]
@@ -86,29 +87,29 @@ async def test_translate_clip_splits_mismatched_batch_and_preserves_order() -> N
             end_seconds=index + 1,
             text=f"Source {index}",
         )
-        for index in range(40)
+        for index in range(24)
     ]
     client = RecordingTranslationClient(
         [
-            translation_response(*[f"s{index}" for index in range(0, 38)]),
-            translation_response(*[f"s{index}" for index in range(0, 38)]),
-            translation_response(*[f"s{index}" for index in range(0, 20)]),
-            translation_response(*[f"s{index}" for index in range(20, 40)]),
+            translation_response(*[f"s{index}" for index in range(0, 22)]),
+            translation_response(*[f"s{index}" for index in range(0, 22)]),
+            translation_response(*[f"s{index}" for index in range(0, 12)]),
+            translation_response(*[f"s{index}" for index in range(12, 24)]),
         ]
     )
 
     result = await LingoEngine(client=client, model="gpt-translation").translate_clip(
         segments=segments,
         clip_start_seconds=0,
-        clip_end_seconds=40,
+        clip_end_seconds=24,
     )
 
     assert [
         len(json.loads(str(call["user_prompt"]))["items"])
         for call in client.calls
-    ] == [40, 40, 20, 20]
+    ] == [24, 24, 12, 12]
     assert [item.segment_id for item in result] == [
-        f"s{index}" for index in range(40)
+        f"s{index}" for index in range(24)
     ]
 
 

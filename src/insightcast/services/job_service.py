@@ -1421,9 +1421,9 @@ class JobService:
             ).items()
         }
 
-    def _llm_summary_fields(self, job_id: str) -> dict[str, int]:
+    def _llm_summary_fields(self, job_id: str) -> dict[str, int | float]:
         traces = self._operation_llm_metrics.get(job_id, {})
-        fields: dict[str, int] = {
+        fields: dict[str, int | float] = {
             "llm_calls": 0,
             "llm_input_tokens": 0,
             "llm_output_tokens": 0,
@@ -1439,6 +1439,13 @@ class JobService:
             fields["llm_input_tokens"] += metrics["input_tokens"]
             fields["llm_output_tokens"] += metrics["output_tokens"]
             fields["llm_total_tokens"] += metrics["total_tokens"]
+        translation_calls = traces.get("translate_subtitles", {}).get("calls", 0)
+        repair_calls = traces.get("translate_subtitles_repair", {}).get("calls", 0)
+        if translation_calls:
+            fields["llm_translate_subtitles_repair_ratio"] = round(
+                repair_calls / translation_calls,
+                3,
+            )
         return fields
 
     def _window_plan_summary_fields(self, job_id: str) -> dict[str, Any]:

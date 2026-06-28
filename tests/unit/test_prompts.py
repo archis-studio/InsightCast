@@ -120,6 +120,17 @@ def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None
         "candidate explains a materially different idea and the overlap is necessary."
     )
     assert '"segment_id":"s1"' in translation_user
+    translation_payload = json.loads(translation_user)
+    assert translation.PROMPT_VERSION == "translation-v2"
+    assert translation_payload["item_count"] == 1
+    assert translation_payload["required_segment_ids"] == ["s1"]
+    assert translation_payload["mapping_contract"] == {
+        "preserve_segment_ids_exactly": True,
+        "preserve_item_order": True,
+        "return_exactly_one_translation_per_source_item": True,
+        "do_not_merge_split_omit_add_or_reorder_items": True,
+        "translated_text_must_be_readable_traditional_chinese": True,
+    }
     assert '"source_title":"Source"' in metadata_user
 
 
