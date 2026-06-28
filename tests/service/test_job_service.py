@@ -1061,6 +1061,15 @@ async def test_analysis_emits_concise_task_progress_events(
         f"task job_id={job.job_id} type=ANALYSIS status=WAITING_SELECTION "
         "message='2 candidates are ready for selection.'"
     ) in messages
+    assert any(
+        "InsightCast task_summary" in message
+        and f"job_id={job.job_id}" in message
+        and "type=ANALYSIS" in message
+        and "event: 'analysis_completed'" in message
+        and "stage_topic_discovery_seconds:" in message
+        and "llm_total_tokens: 8" in message
+        for message in messages
+    )
 
 
 @pytest.mark.asyncio
@@ -1234,6 +1243,9 @@ async def test_pipeline_log_records_analysis_and_render_stage_timings(
     ) in log
     assert "input_tokens=5" in log
     assert "total_tokens=8" in log
+    assert "InsightCast task_summary" in log
+    assert "event: 'analysis_completed'" in log
+    assert "llm_topic_discovery_total_tokens: 8" in log
     assert "processed_chunks=2" in log
     assert "chunk_count=2" in log
     for stage in (
@@ -1252,6 +1264,8 @@ async def test_pipeline_log_records_analysis_and_render_stage_timings(
         assert f"stage_completed stage={stage}" in log
     assert "stage_started stage=candidate_curation" not in log
     assert "elapsed_seconds=" in log
+    assert "event: 'render_completed'" in log
+    assert "stage_burn_subtitles_seconds:" in log
 
 
 @pytest.mark.asyncio

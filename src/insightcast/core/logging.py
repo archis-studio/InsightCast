@@ -71,10 +71,58 @@ def log_task_stage(
 
 def format_log_fields(fields: dict[str, Any]) -> str:
     return " ".join(
-        f"{key}={value!r}" if isinstance(value, str) else f"{key}={value}"
+        f"{key}={format_log_value(value)}"
         for key, value in fields.items()
         if value is not None
     )
+
+
+def format_log_value(value: Any) -> str:
+    return repr(value) if isinstance(value, str) else str(value)
+
+
+def format_task_summary(job: BaseJob, fields: dict[str, Any]) -> str:
+    detail_fields: dict[str, Any] = {}
+    timing_fields: dict[str, Any] = {}
+    llm_fields: dict[str, Any] = {}
+    window_fields: dict[str, Any] = {}
+    for key, value in fields.items():
+        if value is None:
+            continue
+        if key == "operation_elapsed_seconds" or key.startswith("stage_"):
+            timing_fields[key] = value
+        elif key.startswith("llm_"):
+            llm_fields[key] = value
+        elif key.startswith("window_"):
+            window_fields[key] = value
+        else:
+            detail_fields[key] = value
+
+    lines = [
+        "============================================================",
+        "InsightCast task_summary",
+        "------------------------------------------------------------",
+        f"job_id={job.job_id}",
+        f"type={job.job_type}",
+    ]
+    _append_summary_group(lines, "details", detail_fields)
+    _append_summary_group(lines, "timing", timing_fields)
+    _append_summary_group(lines, "llm", llm_fields)
+    _append_summary_group(lines, "window", window_fields)
+    lines.append("============================================================")
+    return "\n".join(lines)
+
+
+def _append_summary_group(
+    lines: list[str],
+    title: str,
+    fields: dict[str, Any],
+) -> None:
+    if not fields:
+        return
+    lines.append(f"{title}:")
+    for key, value in fields.items():
+        lines.append(f"  {key}: {format_log_value(value)}")
 
 
 def log_task_transcription_progress(job: BaseJob, fields: dict[str, Any]) -> None:
@@ -96,6 +144,13 @@ def log_task_llm_telemetry(job: BaseJob, fields: dict[str, Any]) -> None:
         job.job_id,
         job.job_type,
         format_log_fields(fields),
+    )
+
+
+def log_task_summary(job: BaseJob, fields: dict[str, Any]) -> None:
+    _TASK_LOGGER.info(
+        "\n%s",
+        format_task_summary(job, fields),
     )
 
 

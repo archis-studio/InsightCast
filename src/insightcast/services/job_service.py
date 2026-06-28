@@ -11,12 +11,14 @@ from uuid import uuid4
 from insightcast.core.exceptions import InsightCastError
 from insightcast.core.logging import (
     format_log_fields,
+    format_task_summary,
     get_job_log_path,
     get_job_logger,
     log_task_failure,
     log_task_llm_telemetry,
     log_task_stage,
     log_task_status,
+    log_task_summary,
     log_task_transcription_progress,
 )
 from insightcast.domain.enums import ErrorCode, JobStatus, JobType
@@ -117,6 +119,10 @@ class JobService:
         self._transcript_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._source_metadata: dict[str, Any] = {}
         self._source_fingerprints: dict[str, str] = {}
+        self._operation_started_at: dict[str, float] = {}
+        self._operation_stage_metrics: dict[str, dict[str, float]] = {}
+        self._operation_llm_metrics: dict[str, dict[str, dict[str, int]]] = {}
+        self._operation_window_plan: dict[str, dict[str, Any]] = {}
         self.processed_work: list[WorkItem] = []
         self.video_store = VideoStore(self.output_root, FileJobWriter())
 
@@ -339,6 +345,7 @@ class JobService:
     async def process(self, item: WorkItem) -> None:
         self.processed_work.append(item)
         job = self._job_for_work_item(item)
+        self._reset_operation_metrics(job.job_id)
         with capture_llm_telemetry(
             lambda fields, job=job: self._log_llm_telemetry(job, fields)
         ):
@@ -355,11 +362,12 @@ class JobService:
             return self.get_direct_render_job(item.job_id)
         return self.get_analysis_job(item.job_id)
 
-    @staticmethod
     def _log_llm_telemetry(
+        self,
         job: AnalysisJob | DirectRenderJob,
         fields: dict[str, Any],
     ) -> None:
+        self._record_llm_telemetry(job.job_id, fields)
         get_job_logger(job.job_id, job.output_dir).info(
             "llm_telemetry %s",
             format_log_fields(fields),
@@ -481,6 +489,14 @@ class JobService:
             )
             log_task_status(job)
             self.writer.write_job(job)
+            self._log_operation_summary(
+                job,
+                {
+                    "event": "analysis_completed",
+                    "analysis_id": job.analysis_id,
+                    "candidate_count": len(job.candidates),
+                },
+            )
         except InsightCastError as exc:
             get_job_logger(job.job_id, job.output_dir).exception(
                 "Analysis pipeline failed with %s",
@@ -814,6 +830,16 @@ class JobService:
             job.status = JobStatus.COMPLETED
             job.message = batch.message
         self._touch(job)
+        if not failures:
+            self._log_operation_summary(
+                job,
+                {
+                    "event": "render_completed",
+                    "render_id": batch.render_id,
+                    "candidate_ids": ",".join(batch.candidate_ids),
+                    "candidate_count": len(batch.candidate_ids),
+                },
+            )
 
     async def _process_direct_render(self, job_id: str) -> None:
         job = self.get_direct_render_job(job_id)
@@ -1081,6 +1107,13 @@ class JobService:
                 JobStatus.COMPLETED,
                 "Direct render completed successfully.",
             )
+            self._log_operation_summary(
+                job,
+                {
+                    "event": "direct_render_completed",
+                    "render_id": job.render_id,
+                },
+            )
         except InsightCastError as exc:
             get_job_logger(job.job_id, job.output_dir).exception(
                 "Direct render pipeline failed with %s",
@@ -1305,6 +1338,7 @@ class JobService:
             )
             raise
         elapsed_seconds = perf_counter() - started_at
+        self._record_stage_metric(job.job_id, stage, elapsed_seconds)
         logger.info(
             "stage_completed stage=%s elapsed_seconds=%.3f",
             stage,
@@ -1317,6 +1351,113 @@ class JobService:
             elapsed_seconds=elapsed_seconds,
         )
         return result
+
+    def _reset_operation_metrics(self, job_id: str) -> None:
+        self._operation_started_at[job_id] = perf_counter()
+        self._operation_stage_metrics[job_id] = {}
+        self._operation_llm_metrics[job_id] = {}
+        self._operation_window_plan[job_id] = {}
+
+    def _record_stage_metric(
+        self,
+        job_id: str,
+        stage: str,
+        elapsed_seconds: float,
+    ) -> None:
+        self._operation_stage_metrics.setdefault(job_id, {})[stage] = elapsed_seconds
+
+    def _record_llm_telemetry(self, job_id: str, fields: dict[str, Any]) -> None:
+        event = fields.get("event")
+        if event == "window_plan":
+            self._operation_window_plan[job_id] = fields.copy()
+            return
+        if event != "completed":
+            return
+        trace_name = str(fields.get("trace_name") or "unknown")
+        metrics = self._operation_llm_metrics.setdefault(job_id, {}).setdefault(
+            trace_name,
+            {
+                "calls": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "user_chars": 0,
+            },
+        )
+        metrics["calls"] += 1
+        for key in ("input_tokens", "output_tokens", "total_tokens", "user_chars"):
+            value = fields.get(key)
+            if isinstance(value, int):
+                metrics[key] += value
+
+    def _log_operation_summary(
+        self,
+        job: AnalysisJob | DirectRenderJob,
+        fields: dict[str, Any],
+    ) -> None:
+        summary = {
+            **fields,
+            "operation_elapsed_seconds": round(
+                perf_counter() - self._operation_started_at.get(job.job_id, perf_counter()),
+                3,
+            ),
+            **self._stage_summary_fields(job.job_id),
+            **self._llm_summary_fields(job.job_id),
+            **self._window_plan_summary_fields(job.job_id),
+        }
+        get_job_logger(job.job_id, job.output_dir).info(
+            "\n%s",
+            format_task_summary(job, summary),
+        )
+        log_task_summary(job, summary)
+
+    def _stage_summary_fields(self, job_id: str) -> dict[str, float]:
+        return {
+            f"stage_{_metric_key(stage)}_seconds": round(elapsed_seconds, 3)
+            for stage, elapsed_seconds in self._operation_stage_metrics.get(
+                job_id,
+                {},
+            ).items()
+        }
+
+    def _llm_summary_fields(self, job_id: str) -> dict[str, int]:
+        traces = self._operation_llm_metrics.get(job_id, {})
+        fields: dict[str, int] = {
+            "llm_calls": 0,
+            "llm_input_tokens": 0,
+            "llm_output_tokens": 0,
+            "llm_total_tokens": 0,
+        }
+        for trace_name, metrics in traces.items():
+            trace_key = _metric_key(trace_name)
+            fields[f"llm_{trace_key}_calls"] = metrics["calls"]
+            fields[f"llm_{trace_key}_input_tokens"] = metrics["input_tokens"]
+            fields[f"llm_{trace_key}_output_tokens"] = metrics["output_tokens"]
+            fields[f"llm_{trace_key}_total_tokens"] = metrics["total_tokens"]
+            fields["llm_calls"] += metrics["calls"]
+            fields["llm_input_tokens"] += metrics["input_tokens"]
+            fields["llm_output_tokens"] += metrics["output_tokens"]
+            fields["llm_total_tokens"] += metrics["total_tokens"]
+        return fields
+
+    def _window_plan_summary_fields(self, job_id: str) -> dict[str, Any]:
+        fields = self._operation_window_plan.get(job_id, {})
+        if not fields:
+            return {}
+        return {
+            "window_transcript_scope": fields.get("transcript_scope"),
+            "window_transcript_is_complete": fields.get("transcript_is_complete"),
+            "window_original_segments": fields.get("original_segments"),
+            "window_provided_segments": fields.get("provided_segments"),
+            "window_count": fields.get("window_count"),
+            "window_prompt_char_budget": fields.get("prompt_char_budget"),
+            "window_estimated_transcript_chars": fields.get(
+                "estimated_transcript_chars"
+            ),
+            "window_provided_transcript_chars": fields.get(
+                "provided_transcript_chars"
+            ),
+        }
 
     def _stage_manifest_path(self, render_dir: Path) -> Path:
         return render_dir / "stage-manifest.json"
@@ -1596,3 +1737,7 @@ class JobService:
             "The requested job does not exist in this server process.",
             details={"job_id": job_id},
         )
+
+
+def _metric_key(value: str) -> str:
+    return "".join(character if character.isalnum() else "_" for character in value)

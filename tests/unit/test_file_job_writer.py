@@ -7,11 +7,13 @@ from threading import Barrier
 import pytest
 
 from insightcast.core.logging import (
+    format_task_summary,
     get_job_logger,
     log_task_failure,
     log_task_llm_telemetry,
     log_task_stage,
     log_task_status,
+    log_task_summary,
 )
 from insightcast.domain.enums import ErrorCode, JobStatus, JobType
 from insightcast.domain.models import AnalysisJob, JobError
@@ -175,6 +177,66 @@ def test_log_task_llm_telemetry_emits_expected_console_message(
         "trace_name='candidate_selection' model='gpt-5.4-mini' "
         "input_tokens=100 total_tokens=125"
     )
+
+
+def test_format_task_summary_uses_readable_grouped_output(tmp_path: Path) -> None:
+    job = make_job(tmp_path)
+
+    summary = format_task_summary(
+        job,
+        {
+            "event": "analysis_completed",
+            "stage_topic_discovery_seconds": 1.23,
+            "llm_total_tokens": 125,
+            "window_provided_segments": 10,
+        },
+    )
+
+    assert summary == (
+        "============================================================\n"
+        "InsightCast task_summary\n"
+        "------------------------------------------------------------\n"
+        "job_id=job-1\n"
+        "type=ANALYSIS\n"
+        "details:\n"
+        "  event: 'analysis_completed'\n"
+        "timing:\n"
+        "  stage_topic_discovery_seconds: 1.23\n"
+        "llm:\n"
+        "  llm_total_tokens: 125\n"
+        "window:\n"
+        "  window_provided_segments: 10\n"
+        "============================================================"
+    )
+
+
+def test_log_task_summary_emits_readable_console_message(
+    tmp_path: Path,
+    task_log_records: list[logging.LogRecord],
+) -> None:
+    job = make_job(tmp_path)
+
+    log_task_summary(
+        job,
+        {
+            "event": "analysis_completed",
+            "stage_topic_discovery_seconds": 1.23,
+            "llm_total_tokens": 125,
+            "window_provided_segments": 10,
+        },
+    )
+
+    [record] = task_log_records
+    assert record.name == "insightcast.task"
+    assert record.levelno == logging.INFO
+    assert record.msg == "\n%s"
+    message = record.getMessage()
+    assert "============================================================" in message
+    assert "InsightCast task_summary" in message
+    assert "details:\n  event: 'analysis_completed'" in message
+    assert "timing:\n  stage_topic_discovery_seconds: 1.23" in message
+    assert "llm:\n  llm_total_tokens: 125" in message
+    assert "window:\n  window_provided_segments: 10" in message
 
 
 def test_write_job_creates_pretty_utf8_atomic_snapshot(tmp_path: Path) -> None:

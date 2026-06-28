@@ -3,12 +3,14 @@ from typing import Any
 
 from insightcast.prompts.serialization import compact_json
 
-PROMPT_VERSION = "topic-discovery-v2"
-SYSTEM_PROMPT = """Evaluate the full transcript and identify distinct important claims,
-findings, explanations, consequences, and decisions that can become standalone InsightCast
-highlights. Rank topics by source importance and viewer value, merge semantic duplicates,
-and do not rank material merely because it uses controversy or emotional phrasing. Return
-only the requested structured output."""
+PROMPT_VERSION = "topic-discovery-v3"
+SYSTEM_PROMPT = """Evaluate the provided transcript context and identify distinct important
+claims, findings, explanations, consequences, and decisions that can become standalone
+InsightCast highlights. When transcript_is_complete is true, evaluate the full transcript.
+When deterministic windows are provided, treat times as original source timestamps and
+rank only topics supported by the provided source windows. Rank topics by source importance
+and viewer value, merge semantic duplicates, and do not rank material merely because it
+uses controversy or emotional phrasing. Return only the requested structured output."""
 
 
 def build_user_prompt(
@@ -16,10 +18,20 @@ def build_user_prompt(
     transcript: Sequence[Mapping[str, Any]],
     topic_pool_size: int,
     validation_feedback: str | None,
+    transcript_scope: str = "full_transcript",
+    transcript_is_complete: bool = True,
+    window_plan: Sequence[Mapping[str, Any]] | None = None,
+    original_segment_count: int | None = None,
+    provided_segment_count: int | None = None,
 ) -> str:
     payload = {
         "topic_pool_size": topic_pool_size,
-        "evaluate_full_transcript": True,
+        "evaluate_full_transcript": transcript_is_complete,
+        "transcript_scope": transcript_scope,
+        "transcript_is_complete": transcript_is_complete,
+        "window_plan": list(window_plan or []),
+        "original_segment_count": original_segment_count,
+        "provided_segment_count": provided_segment_count,
         "rank_by_importance": True,
         "require_distinct_topics": True,
         "evaluation_rubric": [

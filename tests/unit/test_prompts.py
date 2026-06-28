@@ -133,9 +133,12 @@ def test_topic_discovery_prompt_ranks_distinct_important_topics() -> None:
     )
 
     payload = json.loads(user_prompt)
-    assert topic_discovery.PROMPT_VERSION == "topic-discovery-v2"
+    assert topic_discovery.PROMPT_VERSION == "topic-discovery-v3"
     assert payload["topic_pool_size"] == 4
     assert payload["evaluate_full_transcript"] is True
+    assert payload["transcript_scope"] == "full_transcript"
+    assert payload["transcript_is_complete"] is True
+    assert payload["window_plan"] == []
     assert payload["rank_by_importance"] is True
     assert payload["require_distinct_topics"] is True
     assert payload["exclude_low_value_material"] == [
@@ -160,6 +163,7 @@ def test_topic_discovery_prompt_ranks_distinct_important_topics() -> None:
     )
     system_prompt = topic_discovery.SYSTEM_PROMPT.lower()
     assert "full transcript" in system_prompt
+    assert "original source timestamps" in system_prompt
     assert "importance" in system_prompt
     assert "standalone" in system_prompt
     assert "distinct" in system_prompt

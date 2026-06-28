@@ -1,5 +1,6 @@
 import math
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -7,14 +8,24 @@ from pydantic import BaseModel, ConfigDict
 from insightcast.core.exceptions import InsightCastError
 from insightcast.domain.enums import ErrorCode
 from insightcast.domain.models import Candidate, Transcript, TranscriptSegment
+from insightcast.infrastructure.openai_client import emit_llm_telemetry
 from insightcast.prompts import curator, topic_discovery
-from insightcast.prompts.serialization import serialize_transcript_segments_for_prompt
+from insightcast.prompts.serialization import (
+    compact_json,
+    serialize_transcript_segments_for_prompt,
+)
 
 ACCEPTED_DURATION_TOLERANCE_SECONDS = 60
 FINAL_DURATION_SEGMENT_TOLERANCE_SECONDS = 30
 TOPIC_POOL_MULTIPLIER = 2
 TOPIC_PRE_BUFFER_SECONDS = 120
 TOPIC_POST_BUFFER_SECONDS = 180
+DISCOVERY_PROMPT_CHAR_BUDGET = 24_000
+DISCOVERY_WINDOW_SECONDS = 10 * 60
+DISCOVERY_WINDOW_SHIFT_SECONDS = 10 * 60
+DISCOVERY_MIN_WINDOW_SECONDS = 4 * 60
+DISCOVERY_MIN_WINDOW_COUNT = 3
+DISCOVERY_WINDOWS_PER_CANDIDATE = 1
 
 
 class CuratorModel(BaseModel):
@@ -50,6 +61,19 @@ class TopicDiscoveryResponse(CuratorModel):
     topics: list[TopicDiscoveryOutput]
 
 
+@dataclass(frozen=True)
+class TranscriptPromptPlan:
+    segments: list[TranscriptSegment]
+    transcript_scope: str
+    transcript_is_complete: bool
+    windows: list[tuple[float, float]]
+    original_segment_count: int
+
+    @property
+    def provided_segment_count(self) -> int:
+        return len(self.segments)
+
+
 class CurationResult(CuratorModel):
     candidates: list[Candidate]
     model: str
@@ -71,15 +95,46 @@ class CuratorEngine:
         minimum_topic_count = candidate_count + 1
         feedback: str | None = None
         last_response: TopicDiscoveryResponse | None = None
+        prompt_plan = _plan_topic_discovery_transcript(
+            segments=transcript.segments,
+            candidate_count=candidate_count,
+            char_budget=DISCOVERY_PROMPT_CHAR_BUDGET,
+        )
+        serialized_transcript = serialize_transcript_segments_for_prompt(
+            prompt_plan.segments
+        )
+        emit_llm_telemetry(
+            {
+                "event": "window_plan",
+                "trace_name": "topic_discovery",
+                "transcript_scope": prompt_plan.transcript_scope,
+                "transcript_is_complete": prompt_plan.transcript_is_complete,
+                "original_segments": prompt_plan.original_segment_count,
+                "provided_segments": prompt_plan.provided_segment_count,
+                "window_count": len(prompt_plan.windows),
+                "prompt_char_budget": DISCOVERY_PROMPT_CHAR_BUDGET,
+                "estimated_transcript_chars": _serialized_transcript_chars(
+                    transcript.segments
+                ),
+                "provided_transcript_chars": _serialized_transcript_chars(
+                    prompt_plan.segments
+                ),
+            }
+        )
 
         for attempt in range(2):
             response = await self.client.parse(
                 model=self.model,
                 system_prompt=topic_discovery.SYSTEM_PROMPT,
                 user_prompt=topic_discovery.build_user_prompt(
-                    transcript=serialize_transcript_segments_for_prompt(transcript.segments),
+                    transcript=serialized_transcript,
                     topic_pool_size=topic_pool_size,
                     validation_feedback=feedback,
+                    transcript_scope=prompt_plan.transcript_scope,
+                    transcript_is_complete=prompt_plan.transcript_is_complete,
+                    window_plan=_window_plan_payload(prompt_plan.windows),
+                    original_segment_count=prompt_plan.original_segment_count,
+                    provided_segment_count=prompt_plan.provided_segment_count,
                 ),
                 response_model=TopicDiscoveryResponse,
                 trace_name="topic_discovery",
@@ -318,10 +373,13 @@ class CuratorEngine:
             if not errors:
                 return CurationResult(
                     candidates=[
-                        Candidate(**candidate.model_dump()) for candidate in normalized_candidates
+                        Candidate(**candidate.model_dump())
+                        for candidate in normalized_candidates
                     ],
                     model=self.model,
-                    prompt_version=(f"{topic_discovery.PROMPT_VERSION}+{curator.PROMPT_VERSION}"),
+                    prompt_version=(
+                        f"{topic_discovery.PROMPT_VERSION}+{curator.PROMPT_VERSION}"
+                    ),
                 )
             feedback = "; ".join(errors)
             if attempt == 1:
@@ -493,6 +551,191 @@ def _build_topic_windows(
             segment.end_seconds > start and segment.start_seconds < end
             for start, end in merged
         )
+    ]
+
+
+def _plan_topic_discovery_transcript(
+    *,
+    segments: Sequence[TranscriptSegment],
+    candidate_count: int,
+    char_budget: int,
+) -> TranscriptPromptPlan:
+    original = list(segments)
+    full_chars = _serialized_transcript_chars(original)
+    full_plan = TranscriptPromptPlan(
+        segments=original,
+        transcript_scope="full_transcript",
+        transcript_is_complete=True,
+        windows=[],
+        original_segment_count=len(original),
+    )
+    if full_chars <= char_budget or not original:
+        return full_plan
+
+    windows = _select_budgeted_discovery_windows(
+        segments=original,
+        max_window_count=max(
+            DISCOVERY_MIN_WINDOW_COUNT,
+            candidate_count * DISCOVERY_WINDOWS_PER_CANDIDATE,
+        ),
+        char_budget=char_budget,
+    )
+    if not windows:
+        return full_plan
+
+    selected_segments = _segments_in_windows(original, windows)
+    if not selected_segments or len(selected_segments) >= len(original):
+        return full_plan
+
+    return TranscriptPromptPlan(
+        segments=selected_segments,
+        transcript_scope="deterministic_discovery_windows",
+        transcript_is_complete=False,
+        windows=windows,
+        original_segment_count=len(original),
+    )
+
+
+def _select_discovery_windows(
+    *,
+    segments: Sequence[TranscriptSegment],
+    max_window_count: int,
+    window_seconds: float = DISCOVERY_WINDOW_SECONDS,
+    shift_seconds: float = DISCOVERY_WINDOW_SHIFT_SECONDS,
+) -> list[tuple[float, float]]:
+    if not segments:
+        return []
+
+    transcript_start = segments[0].start_seconds
+    transcript_end = segments[-1].end_seconds
+    if transcript_end <= transcript_start:
+        return []
+
+    raw_windows = _sliding_time_windows(
+        transcript_start=transcript_start,
+        transcript_end=transcript_end,
+        window_seconds=window_seconds,
+        shift_seconds=shift_seconds,
+    )
+    if len(raw_windows) <= max_window_count:
+        return _merge_time_windows(raw_windows)
+
+    scored = [
+        (_window_text_density(segments, start, end), index, start, end)
+        for index, (start, end) in enumerate(raw_windows)
+    ]
+    selected: dict[int, tuple[float, float]] = {}
+    anchor_indexes = {
+        0,
+        len(raw_windows) - 1,
+    }
+    for index in sorted(anchor_indexes):
+        selected[index] = raw_windows[index]
+
+    for _, index, start, end in sorted(scored, key=lambda item: (-item[0], item[1])):
+        if len(selected) >= max_window_count:
+            break
+        selected[index] = (start, end)
+
+    return [window for _, window in sorted(selected.items(), key=lambda item: item[0])]
+
+
+def _select_budgeted_discovery_windows(
+    *,
+    segments: Sequence[TranscriptSegment],
+    max_window_count: int,
+    char_budget: int,
+) -> list[tuple[float, float]]:
+    window_seconds = DISCOVERY_WINDOW_SECONDS
+    best_windows: list[tuple[float, float]] = []
+    while window_seconds >= DISCOVERY_MIN_WINDOW_SECONDS:
+        windows = _select_discovery_windows(
+            segments=segments,
+            max_window_count=max_window_count,
+            window_seconds=window_seconds,
+            shift_seconds=window_seconds,
+        )
+        selected_segments = _segments_in_windows(segments, windows)
+        if selected_segments and _serialized_transcript_chars(selected_segments) <= char_budget:
+            return windows
+        if selected_segments:
+            best_windows = windows
+        window_seconds = math.floor(window_seconds * 0.8)
+
+    return best_windows
+
+
+def _segments_in_windows(
+    segments: Sequence[TranscriptSegment],
+    windows: Sequence[tuple[float, float]],
+) -> list[TranscriptSegment]:
+    return [
+        segment
+        for segment in segments
+        if any(
+            segment.end_seconds > start and segment.start_seconds < end
+            for start, end in windows
+        )
+    ]
+
+
+def _sliding_time_windows(
+    *,
+    transcript_start: float,
+    transcript_end: float,
+    window_seconds: float,
+    shift_seconds: float,
+) -> list[tuple[float, float]]:
+    duration = transcript_end - transcript_start
+    if duration <= window_seconds:
+        return [(transcript_start, transcript_end)]
+
+    windows: list[tuple[float, float]] = []
+    start = transcript_start
+    while start < transcript_end:
+        end = min(transcript_end, start + window_seconds)
+        windows.append((start, end))
+        if end >= transcript_end:
+            break
+        start += shift_seconds
+
+    final_start = max(transcript_start, transcript_end - window_seconds)
+    if windows[-1][0] < final_start:
+        windows.append((final_start, transcript_end))
+    return windows
+
+
+def _window_text_density(
+    segments: Sequence[TranscriptSegment],
+    start_seconds: float,
+    end_seconds: float,
+) -> float:
+    text_chars = sum(
+        len(segment.text.strip())
+        for segment in segments
+        if segment.end_seconds > start_seconds and segment.start_seconds < end_seconds
+    )
+    duration = max(1.0, end_seconds - start_seconds)
+    return text_chars / duration
+
+
+def _serialized_transcript_chars(segments: Sequence[TranscriptSegment]) -> int:
+    return len(
+        compact_json(
+            {"transcript": serialize_transcript_segments_for_prompt(segments)}
+        )
+    )
+
+
+def _window_plan_payload(
+    windows: Sequence[tuple[float, float]],
+) -> list[dict[str, float]]:
+    return [
+        {
+            "start": round(start, 3),
+            "end": round(end, 3),
+        }
+        for start, end in windows
     ]
 
 

@@ -319,7 +319,7 @@ async def test_curate_discovers_topics_then_selects_candidates() -> None:
     candidate_payload = json.loads(str(client.calls[1]["user_prompt"]))
     assert candidate_payload["topics"][0]["topic_id"] == "T1"
     assert candidate_payload["topics"][1]["topic_id"] == "T2"
-    assert result.prompt_version == "topic-discovery-v2+curator-v4"
+    assert result.prompt_version == "topic-discovery-v3+curator-v4"
 
 
 @pytest.mark.asyncio
@@ -563,6 +563,127 @@ def test_build_topic_windows_returns_empty_for_no_valid_ranges() -> None:
     )
 
     assert windowed == []
+
+
+def test_topic_discovery_plan_keeps_short_transcripts_complete() -> None:
+    source = segmented_transcript(
+        (0, 60),
+        (60, 120),
+        (120, 180),
+    )
+
+    plan = curator_engine._plan_topic_discovery_transcript(
+        segments=source.segments,
+        candidate_count=2,
+        char_budget=10_000,
+    )
+
+    assert plan.transcript_scope == "full_transcript"
+    assert plan.transcript_is_complete is True
+    assert plan.windows == []
+    assert [segment.segment_id for segment in plan.segments] == ["s1", "s2", "s3"]
+
+
+def test_topic_discovery_plan_prefilters_long_transcripts_without_rebasing_time() -> None:
+    source = Transcript(
+        language="en",
+        duration_seconds=3600,
+        segments=[
+            TranscriptSegment(
+                segment_id=f"s{index}",
+                start_seconds=float(start),
+                end_seconds=float(start + 60),
+                text=("dense insight " * 300 if 1200 <= start < 1800 else "short"),
+            )
+            for index, start in enumerate(range(0, 3600, 60), start=1)
+        ],
+    )
+
+    plan = curator_engine._plan_topic_discovery_transcript(
+        segments=source.segments,
+        candidate_count=2,
+        char_budget=1_000,
+    )
+
+    assert plan.transcript_scope == "deterministic_discovery_windows"
+    assert plan.transcript_is_complete is False
+    assert plan.original_segment_count == 60
+    assert 0 < len(plan.segments) < len(source.segments)
+    assert plan.windows
+    assert any(start < 1800 and end > 1200 for start, end in plan.windows)
+    assert any(segment.start_seconds >= 1200 for segment in plan.segments)
+    assert all(segment.start_seconds < segment.end_seconds for segment in plan.segments)
+
+
+def test_topic_discovery_plan_does_not_cover_entire_fifty_minute_transcript() -> None:
+    source = Transcript(
+        language="en",
+        duration_seconds=3000,
+        segments=[
+            TranscriptSegment(
+                segment_id=f"s{index}",
+                start_seconds=float(start),
+                end_seconds=float(start + 60),
+                text=("dense insight " * 300 if 1200 <= start < 1800 else "short"),
+            )
+            for index, start in enumerate(range(0, 3000, 60), start=1)
+        ],
+    )
+
+    plan = curator_engine._plan_topic_discovery_transcript(
+        segments=source.segments,
+        candidate_count=2,
+        char_budget=1_000,
+    )
+
+    assert plan.transcript_scope == "deterministic_discovery_windows"
+    assert plan.transcript_is_complete is False
+    assert len(plan.windows) == 3
+    assert len(plan.segments) <= 35
+    assert plan.provided_segment_count < plan.original_segment_count
+
+
+@pytest.mark.asyncio
+async def test_discover_topics_sends_window_plan_for_large_transcript() -> None:
+    source = Transcript(
+        language="en",
+        duration_seconds=3600,
+        segments=[
+            TranscriptSegment(
+                segment_id=f"s{index}",
+                start_seconds=float(start),
+                end_seconds=float(start + 60),
+                text=("dense insight " * 300 if 1200 <= start < 1800 else "short"),
+            )
+            for index, start in enumerate(range(0, 3600, 60), start=1)
+        ],
+    )
+    client = FakeStructuredClient(
+        [
+            TopicDiscoveryResponse(
+                topics=[
+                    topic("T1", 1200, 1500, 0.9),
+                    topic("T2", 1500, 1800, 0.8),
+                    topic("T3", 0, 300, 0.7),
+                    topic("T4", 3000, 3300, 0.6),
+                ]
+            )
+        ]
+    )
+
+    await CuratorEngine(client=client, model="gpt-curator").discover_topics(
+        transcript=source,
+        candidate_count=2,
+    )
+
+    payload = json.loads(str(client.calls[0]["user_prompt"]))
+    assert payload["transcript_scope"] == "deterministic_discovery_windows"
+    assert payload["transcript_is_complete"] is False
+    assert payload["evaluate_full_transcript"] is False
+    assert payload["original_segment_count"] == 60
+    assert payload["provided_segment_count"] < 60
+    assert payload["window_plan"]
+    assert any(segment["start"] >= 1200 for segment in payload["transcript"])
 
 
 def test_build_topic_windows_skips_topics_outside_transcript_bounds() -> None:
