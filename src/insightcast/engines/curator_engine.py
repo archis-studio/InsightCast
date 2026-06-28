@@ -26,6 +26,41 @@ DISCOVERY_WINDOW_SHIFT_SECONDS = 10 * 60
 DISCOVERY_MIN_WINDOW_SECONDS = 4 * 60
 DISCOVERY_MIN_WINDOW_COUNT = 3
 DISCOVERY_WINDOWS_PER_CANDIDATE = 1
+SELECTION_PROMPT_CHAR_BUDGET = 36_000
+FRAMEWORK_SIGNAL_TERMS = (
+    "because",
+    "therefore",
+    "the reason",
+    "what matters",
+    "the mistake",
+    "the pattern",
+    "the framework",
+    "the rule",
+    "the model",
+    "the takeaway",
+    "what this means",
+    "in other words",
+    "the point is",
+)
+BANTER_SIGNAL_TERMS = (
+    "laugh",
+    "funny",
+    "joke",
+    "by the way",
+    "welcome",
+    "thanks for having me",
+    "that reminds me",
+    "random",
+    "sponsor",
+    "subscribe",
+)
+REPETITION_SIGNAL_TERMS = (
+    "as i said",
+    "again",
+    "like i said",
+    "we already",
+    "to repeat",
+)
 
 
 class CuratorModel(BaseModel):
@@ -313,25 +348,54 @@ class CuratorEngine:
         final_max_duration_seconds = (
             accepted_max_duration_seconds + FINAL_DURATION_SEGMENT_TOLERANCE_SECONDS
         )
-        windowed_segments = _build_topic_windows(
+        prompt_plan = _plan_candidate_selection_transcript(
             segments=transcript.segments,
             topics=topics.topics,
+            candidate_count=candidate_count,
             target_min_duration_seconds=target_min_duration_seconds,
             final_max_duration_seconds=final_max_duration_seconds,
+            char_budget=SELECTION_PROMPT_CHAR_BUDGET,
         )
-        prompt_segments = windowed_segments or transcript.segments
-        transcript_scope = (
-            "selected_source_windows_around_ranked_topics"
-            if windowed_segments
-            else "full_transcript"
+        serialized_transcript = serialize_transcript_segments_for_prompt(
+            prompt_plan.segments
         )
-        transcript_is_complete = not windowed_segments
+        selection_hints = _build_selection_hints(
+            segments=prompt_plan.segments,
+            windows=prompt_plan.windows,
+        )
+        emit_llm_telemetry(
+            {
+                "event": "window_plan",
+                "trace_name": "candidate_selection",
+                "transcript_scope": prompt_plan.transcript_scope,
+                "transcript_is_complete": prompt_plan.transcript_is_complete,
+                "original_segments": prompt_plan.original_segment_count,
+                "provided_segments": prompt_plan.provided_segment_count,
+                "window_count": len(prompt_plan.windows),
+                "prompt_char_budget": SELECTION_PROMPT_CHAR_BUDGET,
+                "estimated_transcript_chars": _serialized_transcript_chars(
+                    transcript.segments
+                ),
+                "provided_transcript_chars": _serialized_transcript_chars(
+                    prompt_plan.segments
+                ),
+                "selection_hint_count": len(selection_hints),
+                "selection_low_waste_windows": sum(
+                    hint["estimated_waste_level"] == "low"
+                    for hint in selection_hints
+                ),
+                "selection_high_waste_windows": sum(
+                    hint["estimated_waste_level"] == "high"
+                    for hint in selection_hints
+                ),
+            }
+        )
         for attempt in range(2):
             response = await self.client.parse(
                 model=self.model,
                 system_prompt=curator.SYSTEM_PROMPT,
                 user_prompt=curator.build_user_prompt(
-                    transcript=serialize_transcript_segments_for_prompt(prompt_segments),
+                    transcript=serialized_transcript,
                     topics=[topic.model_dump(mode="json") for topic in topics.topics],
                     candidate_count=candidate_count,
                     target_min_duration_seconds=target_min_duration_seconds,
@@ -341,8 +405,13 @@ class CuratorEngine:
                     final_min_duration_seconds=final_min_duration_seconds,
                     final_max_duration_seconds=final_max_duration_seconds,
                     validation_feedback=feedback,
-                    transcript_scope=transcript_scope,
-                    transcript_is_complete=transcript_is_complete,
+                    transcript_scope=prompt_plan.transcript_scope,
+                    transcript_is_complete=prompt_plan.transcript_is_complete,
+                    selection_window_plan=_window_plan_payload(prompt_plan.windows),
+                    selection_hints=selection_hints,
+                    original_segment_count=prompt_plan.original_segment_count,
+                    provided_segment_count=prompt_plan.provided_segment_count,
+                    source_duration_seconds=transcript.duration_seconds,
                 ),
                 response_model=CuratorResponse,
                 trace_name="candidate_selection",
@@ -505,6 +574,70 @@ def _build_topic_windows(
     target_min_duration_seconds: float,
     final_max_duration_seconds: float,
 ) -> list[TranscriptSegment]:
+    windows = _build_topic_time_windows(
+        segments=segments,
+        topics=topics,
+        target_min_duration_seconds=target_min_duration_seconds,
+        final_max_duration_seconds=final_max_duration_seconds,
+    )
+    return _segments_in_windows(segments, windows)
+
+
+def _plan_candidate_selection_transcript(
+    *,
+    segments: Sequence[TranscriptSegment],
+    topics: Sequence[TopicDiscoveryOutput],
+    candidate_count: int,
+    target_min_duration_seconds: float,
+    final_max_duration_seconds: float,
+    char_budget: int,
+) -> TranscriptPromptPlan:
+    original = list(segments)
+    full_plan = TranscriptPromptPlan(
+        segments=original,
+        transcript_scope="full_transcript",
+        transcript_is_complete=True,
+        windows=[],
+        original_segment_count=len(original),
+    )
+    if not original:
+        return full_plan
+
+    windows = _build_topic_time_windows(
+        segments=original,
+        topics=topics,
+        target_min_duration_seconds=target_min_duration_seconds,
+        final_max_duration_seconds=final_max_duration_seconds,
+    )
+    if not windows:
+        return full_plan
+
+    windows = _select_budgeted_topic_windows(
+        segments=original,
+        windows=windows,
+        char_budget=char_budget,
+        minimum_window_count=candidate_count,
+    )
+    selected_segments = _segments_in_windows(original, windows)
+    if not selected_segments or len(selected_segments) >= len(original):
+        return full_plan
+
+    return TranscriptPromptPlan(
+        segments=selected_segments,
+        transcript_scope="budgeted_topic_windows_for_candidate_selection",
+        transcript_is_complete=False,
+        windows=windows,
+        original_segment_count=len(original),
+    )
+
+
+def _build_topic_time_windows(
+    *,
+    segments: Sequence[TranscriptSegment],
+    topics: Sequence[TopicDiscoveryOutput],
+    target_min_duration_seconds: float,
+    final_max_duration_seconds: float,
+) -> list[tuple[float, float]]:
     if not segments:
         return []
 
@@ -540,18 +673,28 @@ def _build_topic_windows(
         if end > start:
             windows.append((start, end))
 
-    if not windows:
-        return []
+    return _merge_time_windows(windows)
 
-    merged = _merge_time_windows(windows)
-    return [
-        segment
-        for segment in segments
-        if any(
-            segment.end_seconds > start and segment.start_seconds < end
-            for start, end in merged
-        )
-    ]
+
+def _select_budgeted_topic_windows(
+    *,
+    segments: Sequence[TranscriptSegment],
+    windows: Sequence[tuple[float, float]],
+    char_budget: int,
+    minimum_window_count: int,
+) -> list[tuple[float, float]]:
+    selected: list[tuple[float, float]] = []
+    for window in windows:
+        candidate_windows = [*selected, window]
+        candidate_segments = _segments_in_windows(segments, candidate_windows)
+        if (
+            len(selected) < minimum_window_count
+            or _serialized_transcript_chars(candidate_segments) <= char_budget
+        ):
+            selected.append(window)
+            continue
+        break
+    return selected
 
 
 def _plan_topic_discovery_transcript(
@@ -737,6 +880,64 @@ def _window_plan_payload(
         }
         for start, end in windows
     ]
+
+
+def _build_selection_hints(
+    *,
+    segments: Sequence[TranscriptSegment],
+    windows: Sequence[tuple[float, float]],
+) -> list[dict[str, Any]]:
+    if not segments:
+        return []
+    hint_windows = list(windows) or [(segments[0].start_seconds, segments[-1].end_seconds)]
+    hints: list[dict[str, Any]] = []
+    for start, end in hint_windows:
+        window_segments = [
+            segment
+            for segment in segments
+            if segment.end_seconds > start and segment.start_seconds < end
+        ]
+        if not window_segments:
+            continue
+        text = " ".join(segment.text for segment in window_segments).lower()
+        duration_minutes = max((end - start) / 60, 1 / 60)
+        framework_signal_count = _count_terms(text, FRAMEWORK_SIGNAL_TERMS)
+        banter_signal_count = _count_terms(text, BANTER_SIGNAL_TERMS)
+        repetition_signal_count = _count_terms(text, REPETITION_SIGNAL_TERMS)
+        waste_signal_count = banter_signal_count + repetition_signal_count
+        hints.append(
+            {
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "segment_count": len(window_segments),
+                "speech_chars": len(text),
+                "speech_chars_per_minute": round(len(text) / duration_minutes, 2),
+                "framework_signal_count": framework_signal_count,
+                "banter_signal_count": banter_signal_count,
+                "repetition_signal_count": repetition_signal_count,
+                "estimated_waste_level": _estimated_waste_level(
+                    framework_signal_count=framework_signal_count,
+                    waste_signal_count=waste_signal_count,
+                ),
+            }
+        )
+    return hints
+
+
+def _count_terms(text: str, terms: Sequence[str]) -> int:
+    return sum(text.count(term) for term in terms)
+
+
+def _estimated_waste_level(
+    *,
+    framework_signal_count: int,
+    waste_signal_count: int,
+) -> str:
+    if waste_signal_count >= max(4, framework_signal_count):
+        return "high"
+    if waste_signal_count >= max(2, framework_signal_count / 2):
+        return "medium"
+    return "low"
 
 
 def _is_valid_topic_range(topic: TopicDiscoveryOutput) -> bool:

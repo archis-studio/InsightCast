@@ -319,7 +319,7 @@ async def test_curate_discovers_topics_then_selects_candidates() -> None:
     candidate_payload = json.loads(str(client.calls[1]["user_prompt"]))
     assert candidate_payload["topics"][0]["topic_id"] == "T1"
     assert candidate_payload["topics"][1]["topic_id"] == "T2"
-    assert result.prompt_version == "topic-discovery-v3+curator-v4"
+    assert result.prompt_version == "topic-discovery-v3+curator-v6"
 
 
 @pytest.mark.asyncio
@@ -370,8 +370,16 @@ async def test_select_candidates_sends_windowed_transcript_to_boundary_prompt() 
 
     payload = json.loads(str(client.calls[0]["user_prompt"]))
     segment_ids = [segment["id"] for segment in payload["transcript"]]
-    assert payload["transcript_scope"] == "selected_source_windows_around_ranked_topics"
+    assert (
+        payload["transcript_scope"]
+        == "budgeted_topic_windows_for_candidate_selection"
+    )
     assert payload["transcript_is_complete"] is False
+    assert payload["selection_window_plan"]
+    assert payload["selection_hints"]
+    assert payload["original_segment_count"] == 40
+    assert payload["provided_segment_count"] == len(payload["transcript"])
+    assert payload["source_duration_seconds"] == source.duration_seconds
     assert "s1" not in segment_ids
     assert "s6" in segment_ids
     assert "s20" not in segment_ids
@@ -398,6 +406,8 @@ async def test_select_candidates_falls_back_to_full_transcript_when_windows_are_
     segment_ids = [segment["id"] for segment in payload["transcript"]]
     assert payload["transcript_scope"] == "full_transcript"
     assert payload["transcript_is_complete"] is True
+    assert payload["selection_window_plan"] == []
+    assert payload["selection_hints"]
     assert segment_ids == ["s1", "s2", "s3"]
 
 
@@ -563,6 +573,92 @@ def test_build_topic_windows_returns_empty_for_no_valid_ranges() -> None:
     )
 
     assert windowed == []
+
+
+def test_candidate_selection_plan_limits_topic_windows_by_budget() -> None:
+    source = Transcript(
+        language="en",
+        duration_seconds=3600,
+        segments=[
+            TranscriptSegment(
+                segment_id=f"s{index}",
+                start_seconds=float(start),
+                end_seconds=float(start + 60),
+                text="selection detail " * 120,
+            )
+            for index, start in enumerate(range(0, 3600, 60), start=1)
+        ],
+    )
+    topics = [
+        topic("T1", 300, 360, 0.9),
+        topic("T2", 1500, 1560, 0.8),
+        topic("T3", 2700, 2760, 0.7),
+    ]
+
+    plan = curator_engine._plan_candidate_selection_transcript(
+        segments=source.segments,
+        topics=topics,
+        candidate_count=2,
+        target_min_duration_seconds=480,
+        final_max_duration_seconds=810,
+        char_budget=30_000,
+    )
+
+    assert plan.transcript_scope == "budgeted_topic_windows_for_candidate_selection"
+    assert plan.transcript_is_complete is False
+    assert len(plan.windows) == 2
+    assert plan.provided_segment_count < plan.original_segment_count
+    assert plan.segments[0].start_seconds == 0
+
+
+def test_candidate_selection_plan_uses_full_transcript_when_no_valid_windows() -> None:
+    source = segmented_transcript((0, 300), (300, 600))
+
+    plan = curator_engine._plan_candidate_selection_transcript(
+        segments=source.segments,
+        topics=[topic("T1", float("nan"), 100, 0.9)],
+        candidate_count=2,
+        target_min_duration_seconds=480,
+        final_max_duration_seconds=810,
+        char_budget=20_000,
+    )
+
+    assert plan.transcript_scope == "full_transcript"
+    assert plan.transcript_is_complete is True
+    assert plan.windows == []
+    assert [segment.segment_id for segment in plan.segments] == ["s1", "s2"]
+
+
+def test_build_selection_hints_estimates_window_waste_and_framework_signals() -> None:
+    source = Transcript(
+        language="en",
+        duration_seconds=600,
+        segments=[
+            TranscriptSegment(
+                segment_id="s1",
+                start_seconds=0,
+                end_seconds=60,
+                text="The reason this matters is because the framework changes the model.",
+            ),
+            TranscriptSegment(
+                segment_id="s2",
+                start_seconds=60,
+                end_seconds=120,
+                text="Funny story by the way laugh joke subscribe again again.",
+            ),
+        ],
+    )
+
+    hints = curator_engine._build_selection_hints(
+        segments=source.segments,
+        windows=[(0, 60), (60, 120)],
+    )
+
+    assert hints[0]["estimated_waste_level"] == "low"
+    assert hints[0]["framework_signal_count"] >= 3
+    assert hints[1]["estimated_waste_level"] == "high"
+    assert hints[1]["banter_signal_count"] >= 4
+    assert hints[1]["repetition_signal_count"] >= 2
 
 
 def test_topic_discovery_plan_keeps_short_transcripts_complete() -> None:

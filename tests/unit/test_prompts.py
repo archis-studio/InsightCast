@@ -53,18 +53,27 @@ def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None
     assert "\n" not in translation_user
     assert "\n" not in metadata_user
     curator_payload = json.loads(curator_user)
-    assert curator.PROMPT_VERSION == "curator-v4"
+    assert curator.PROMPT_VERSION == "curator-v6"
+    assert "original source timestamps" in curator.SYSTEM_PROMPT
+    assert "lowest avoidable waste" in curator.SYSTEM_PROMPT
     assert curator_payload["topics"][0]["topic_id"] == "T1"
+    assert curator_payload["source_duration_seconds"] is None
+    assert "highest useful knowledge density" in curator_payload["long_form_clip_goal"]
     assert (
         curator_payload["transcript_scope"]
         == "selected_source_windows_around_ranked_topics"
     )
     assert curator_payload["transcript_is_complete"] is False
+    assert curator_payload["selection_window_plan"] == []
+    assert curator_payload["selection_hints"] == []
+    assert curator_payload["original_segment_count"] is None
+    assert curator_payload["provided_segment_count"] is None
     assert curator_payload["selection_priority"] == [
-        "importance",
-        "complete_argument",
-        "standalone_viewer_value",
-        "information_density",
+        "complete_argument_with_clear_payoff",
+        "audience_relevance",
+        "high_information_density_across_the_full_8_to_12_minutes",
+        "low_host_banter_repetition_and_tangents",
+        "necessary_context_without_overlong_setup",
         "duration_fit",
     ]
     assert curator_payload["require_distinct_topics"] is True
@@ -85,13 +94,26 @@ def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None
     assert "complete argument" in curator_payload["duration_instruction"].lower()
     assert "segment alignment" in curator_payload["duration_instruction"].lower()
     assert "low-value material" in curator_payload["duration_instruction"].lower()
+    assert "host_reactions_without_new_meaning" in json.dumps(
+        curator_payload["waste_ratio_guidance"],
+        ensure_ascii=False,
+    )
+    assert "anecdotes as evidence" in curator_payload["story_policy"]
     assert curator_payload["candidate_quality_bar"] == [
         "clear_standalone_viewer_payoff",
         "specific_insight_or_tension",
         "enough_context_without_long_setup",
         "evidence_or_reasoning_inside_the_clip",
+        "low_waste_ratio_for_an_8_to_12_minute_clip",
         "minimal_overlap_with_other_candidates",
         "defensible_title_and_summary",
+    ]
+    assert curator_payload["selection_reason_requirements"] == [
+        "state_the_core_audience_payoff",
+        "explain_the_central_claim_or_framework",
+        "explain_why_the_full_range_has_low_avoidable_waste",
+        "identify_how_examples_or_stories_support_the_lesson",
+        "avoid_selecting_a_clip_primarily_because_the_story_is_entertaining",
     ]
     assert curator_payload["overlap_policy"] == (
         "Prefer non-overlapping candidates. Only reuse source time when the second "

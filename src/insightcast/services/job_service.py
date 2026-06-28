@@ -122,7 +122,7 @@ class JobService:
         self._operation_started_at: dict[str, float] = {}
         self._operation_stage_metrics: dict[str, dict[str, float]] = {}
         self._operation_llm_metrics: dict[str, dict[str, dict[str, int]]] = {}
-        self._operation_window_plan: dict[str, dict[str, Any]] = {}
+        self._operation_window_plan: dict[str, dict[str, dict[str, Any]]] = {}
         self.processed_work: list[WorkItem] = []
         self.video_store = VideoStore(self.output_root, FileJobWriter())
 
@@ -1369,7 +1369,8 @@ class JobService:
     def _record_llm_telemetry(self, job_id: str, fields: dict[str, Any]) -> None:
         event = fields.get("event")
         if event == "window_plan":
-            self._operation_window_plan[job_id] = fields.copy()
+            trace_name = str(fields.get("trace_name") or "unknown")
+            self._operation_window_plan.setdefault(job_id, {})[trace_name] = fields.copy()
             return
         if event != "completed":
             return
@@ -1441,23 +1442,48 @@ class JobService:
         return fields
 
     def _window_plan_summary_fields(self, job_id: str) -> dict[str, Any]:
-        fields = self._operation_window_plan.get(job_id, {})
-        if not fields:
+        traces = self._operation_window_plan.get(job_id, {})
+        if not traces:
             return {}
-        return {
-            "window_transcript_scope": fields.get("transcript_scope"),
-            "window_transcript_is_complete": fields.get("transcript_is_complete"),
-            "window_original_segments": fields.get("original_segments"),
-            "window_provided_segments": fields.get("provided_segments"),
-            "window_count": fields.get("window_count"),
-            "window_prompt_char_budget": fields.get("prompt_char_budget"),
-            "window_estimated_transcript_chars": fields.get(
-                "estimated_transcript_chars"
-            ),
-            "window_provided_transcript_chars": fields.get(
-                "provided_transcript_chars"
-            ),
-        }
+        summary: dict[str, Any] = {}
+        for trace_name, fields in traces.items():
+            trace_key = _metric_key(trace_name)
+            summary.update(
+                {
+                    f"window_{trace_key}_transcript_scope": fields.get(
+                        "transcript_scope"
+                    ),
+                    f"window_{trace_key}_transcript_is_complete": fields.get(
+                        "transcript_is_complete"
+                    ),
+                    f"window_{trace_key}_original_segments": fields.get(
+                        "original_segments"
+                    ),
+                    f"window_{trace_key}_provided_segments": fields.get(
+                        "provided_segments"
+                    ),
+                    f"window_{trace_key}_count": fields.get("window_count"),
+                    f"window_{trace_key}_prompt_char_budget": fields.get(
+                        "prompt_char_budget"
+                    ),
+                    f"window_{trace_key}_estimated_transcript_chars": fields.get(
+                        "estimated_transcript_chars"
+                    ),
+                    f"window_{trace_key}_provided_transcript_chars": fields.get(
+                        "provided_transcript_chars"
+                    ),
+                    f"window_{trace_key}_selection_hint_count": fields.get(
+                        "selection_hint_count"
+                    ),
+                    f"window_{trace_key}_selection_low_waste_windows": fields.get(
+                        "selection_low_waste_windows"
+                    ),
+                    f"window_{trace_key}_selection_high_waste_windows": fields.get(
+                        "selection_high_waste_windows"
+                    ),
+                }
+            )
+        return summary
 
     def _stage_manifest_path(self, render_dir: Path) -> Path:
         return render_dir / "stage-manifest.json"
