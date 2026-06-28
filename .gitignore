@@ -4,6 +4,7 @@
 !.env.example
 .venv/
 .superpowers/
+docs/superpowers/
 .work/
 .worktrees/
 worktrees/

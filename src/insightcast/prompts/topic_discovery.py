@@ -1,6 +1,7 @@
-import json
 from collections.abc import Mapping, Sequence
 from typing import Any
+
+from insightcast.prompts.serialization import compact_json
 
 PROMPT_VERSION = "topic-discovery-v2"
 SYSTEM_PROMPT = """Evaluate the full transcript and identify distinct important claims,
@@ -49,4 +50,4 @@ def build_user_prompt(
         "transcript": list(transcript),
         "validation_feedback": validation_feedback,
     }
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    return compact_json(payload)

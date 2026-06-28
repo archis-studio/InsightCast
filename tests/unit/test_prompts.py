@@ -1,6 +1,11 @@
 import json
 
+from insightcast.domain.models import TranscriptSegment
 from insightcast.prompts import curator, metadata, topic_discovery, translation
+from insightcast.prompts.serialization import (
+    compact_json,
+    serialize_transcript_segments_for_prompt,
+)
 
 
 def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None:
@@ -43,7 +48,10 @@ def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None
         transcript_excerpt="Excerpt",
     )
 
-    assert '"candidate_count": 2' in curator_user
+    assert '"candidate_count":2' in curator_user
+    assert "\n" not in curator_user
+    assert "\n" not in translation_user
+    assert "\n" not in metadata_user
     curator_payload = json.loads(curator_user)
     assert curator.PROMPT_VERSION == "curator-v4"
     assert curator_payload["topics"][0]["topic_id"] == "T1"
@@ -89,8 +97,32 @@ def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None
         "Prefer non-overlapping candidates. Only reuse source time when the second "
         "candidate explains a materially different idea and the overlap is necessary."
     )
-    assert '"segment_id": "s1"' in translation_user
-    assert '"source_title": "Source"' in metadata_user
+    assert '"segment_id":"s1"' in translation_user
+    assert '"source_title":"Source"' in metadata_user
+
+
+def test_prompt_serialization_uses_compact_json_and_short_transcript_fields() -> None:
+    assert compact_json({"b": 1, "a": ["x", "y"]}) == '{"b":1,"a":["x","y"]}'
+
+    payload = serialize_transcript_segments_for_prompt(
+        [
+            TranscriptSegment(
+                segment_id="0-12",
+                start_seconds=12.3456,
+                end_seconds=18.9876,
+                text="  Useful idea  ",
+            )
+        ]
+    )
+
+    assert payload == [
+        {
+            "id": "0-12",
+            "start": 12.346,
+            "end": 18.988,
+            "text": "Useful idea",
+        }
+    ]
 
 
 def test_topic_discovery_prompt_ranks_distinct_important_topics() -> None:

@@ -123,7 +123,11 @@ async def test_discover_topics_requests_larger_ranked_pool() -> None:
     )
 
     assert [item.topic_id for item in result.topics] == ["T1", "T2", "T3", "T4"]
-    assert '"topic_pool_size": 4' in str(client.calls[0]["user_prompt"])
+    user_prompt = str(client.calls[0]["user_prompt"])
+    assert '"topic_pool_size":4' in user_prompt
+    assert '"id":"s1"' in user_prompt
+    assert "segment_id" not in user_prompt
+    assert "start_seconds" not in user_prompt
     assert client.calls[0]["response_model"] is TopicDiscoveryResponse
 
 
@@ -312,9 +316,9 @@ async def test_curate_discovers_topics_then_selects_candidates() -> None:
     assert len(client.calls) == 2
     assert client.calls[0]["response_model"] is TopicDiscoveryResponse
     assert client.calls[1]["response_model"] is CuratorResponse
-    candidate_prompt = str(client.calls[1]["user_prompt"])
-    assert '"topic_id": "T1"' in candidate_prompt
-    assert '"topic_id": "T2"' in candidate_prompt
+    candidate_payload = json.loads(str(client.calls[1]["user_prompt"]))
+    assert candidate_payload["topics"][0]["topic_id"] == "T1"
+    assert candidate_payload["topics"][1]["topic_id"] == "T2"
     assert result.prompt_version == "topic-discovery-v2+curator-v4"
 
 
@@ -365,7 +369,7 @@ async def test_select_candidates_sends_windowed_transcript_to_boundary_prompt() 
     )
 
     payload = json.loads(str(client.calls[0]["user_prompt"]))
-    segment_ids = [segment["segment_id"] for segment in payload["transcript"]]
+    segment_ids = [segment["id"] for segment in payload["transcript"]]
     assert payload["transcript_scope"] == "selected_source_windows_around_ranked_topics"
     assert payload["transcript_is_complete"] is False
     assert "s1" not in segment_ids
@@ -391,7 +395,7 @@ async def test_select_candidates_falls_back_to_full_transcript_when_windows_are_
     )
 
     payload = json.loads(str(client.calls[0]["user_prompt"]))
-    segment_ids = [segment["segment_id"] for segment in payload["transcript"]]
+    segment_ids = [segment["id"] for segment in payload["transcript"]]
     assert payload["transcript_scope"] == "full_transcript"
     assert payload["transcript_is_complete"] is True
     assert segment_ids == ["s1", "s2", "s3"]
@@ -440,13 +444,14 @@ async def test_curator_retries_once_with_validation_feedback() -> None:
 
     assert len(result.candidates) == 1
     assert len(client.calls) == 2
-    assert '"validation_feedback": null' in str(client.calls[0]["user_prompt"])
-    retry_prompt = str(client.calls[1]["user_prompt"])
-    assert "candidate A" in retry_prompt
-    assert "actual duration 100" in retry_prompt
-    assert "target range 480" in retry_prompt
-    assert "accepted range 420" in retry_prompt
-    assert "final range 390" in retry_prompt
+    assert json.loads(str(client.calls[0]["user_prompt"]))["validation_feedback"] is None
+    retry_payload = json.loads(str(client.calls[1]["user_prompt"]))
+    retry_feedback = retry_payload["validation_feedback"]
+    assert "candidate A" in retry_feedback
+    assert "actual duration 100" in retry_feedback
+    assert "target range 480" in retry_feedback
+    assert "accepted range 420" in retry_feedback
+    assert "final range 390" in retry_feedback
 
 
 def test_build_topic_windows_adds_context_and_clamps_to_transcript() -> None:

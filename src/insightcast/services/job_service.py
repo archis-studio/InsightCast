@@ -14,6 +14,7 @@ from insightcast.core.logging import (
     get_job_log_path,
     get_job_logger,
     log_task_failure,
+    log_task_llm_telemetry,
     log_task_stage,
     log_task_status,
     log_task_transcription_progress,
@@ -32,6 +33,7 @@ from insightcast.domain.models import (
 )
 from insightcast.domain.stages import PipelineStage, StageManifest, StageRecord, StageStatus
 from insightcast.engines.render_validator import RenderValidator
+from insightcast.infrastructure.openai_client import capture_llm_telemetry
 from insightcast.infrastructure.transcription.base import (
     TranscriptionSpec,
     build_transcript_cache_key,
@@ -336,13 +338,33 @@ class JobService:
 
     async def process(self, item: WorkItem) -> None:
         self.processed_work.append(item)
-        if item.kind == WorkKind.ANALYSIS:
-            await self._process_analysis(item.job_id)
-        elif item.kind == WorkKind.ANALYSIS_RENDER:
-            assert item.render_id is not None
-            await self._process_analysis_render(item.job_id, item.render_id)
-        else:
-            await self._process_direct_render(item.job_id)
+        job = self._job_for_work_item(item)
+        with capture_llm_telemetry(
+            lambda fields, job=job: self._log_llm_telemetry(job, fields)
+        ):
+            if item.kind == WorkKind.ANALYSIS:
+                await self._process_analysis(item.job_id)
+            elif item.kind == WorkKind.ANALYSIS_RENDER:
+                assert item.render_id is not None
+                await self._process_analysis_render(item.job_id, item.render_id)
+            else:
+                await self._process_direct_render(item.job_id)
+
+    def _job_for_work_item(self, item: WorkItem) -> AnalysisJob | DirectRenderJob:
+        if item.kind is WorkKind.DIRECT_RENDER:
+            return self.get_direct_render_job(item.job_id)
+        return self.get_analysis_job(item.job_id)
+
+    @staticmethod
+    def _log_llm_telemetry(
+        job: AnalysisJob | DirectRenderJob,
+        fields: dict[str, Any],
+    ) -> None:
+        get_job_logger(job.job_id, job.output_dir).info(
+            "llm_telemetry %s",
+            format_log_fields(fields),
+        )
+        log_task_llm_telemetry(job, fields)
 
     async def _process_analysis(self, job_id: str) -> None:
         job = self.get_analysis_job(job_id)
@@ -879,27 +901,161 @@ class JobService:
                 selection_reason="User-selected direct render range.",
                 summary="Direct render selected by the user.",
             )
-            await self._run_stage(
+            stage_manifest = self._load_stage_manifest(
+                render_dir=render_dir,
+                job_id=job.job_id,
+                render_id=job.render_id,
+                candidate_id=None,
+            )
+            selected_segments = [
+                segment
+                for segment in transcript.segments
+                if segment.end_seconds > selection.start_seconds
+                and segment.start_seconds < selection.end_seconds
+            ]
+            stage_manifest = self._start_stage_record(
+                render_dir=render_dir,
+                manifest=stage_manifest,
+                stage=PipelineStage.CUT_CLIP,
+                resume_strategy=(
+                    "rerun cut_clip unless a completed render manifest can be reused"
+                ),
+                fresh=True,
+            )
+            temporary_clip = await self._run_stage(
                 job,
-                "candidate_clip_render",
-                lambda: self.clip_engine.render(
-                    source_video=source.source_artifacts.source_video,
-                    transcript_segments=transcript.segments,
-                    selection=selection,
-                    output_dir=render_dir,
-                    work_dir=self.work_root / job.job_id,
+                PipelineStage.CUT_CLIP.value,
+                lambda: self.clip_engine.cut_clip(
+                    source.source_artifacts.source_video,
+                    selection,
+                    self.work_root / job.job_id / job.render_id,
                 ),
             )
+            stage_manifest = self._finish_stage_record(
+                render_dir=render_dir,
+                manifest=stage_manifest,
+                stage=PipelineStage.CUT_CLIP,
+                status=StageStatus.COMPLETED,
+            )
+            stage_manifest = self._start_stage_record(
+                render_dir=render_dir,
+                manifest=stage_manifest,
+                stage=PipelineStage.TRANSLATE_SUBTITLES,
+                resume_strategy="reuse validated translation batches",
+                fresh=True,
+            )
+            subtitle_items = await self._run_stage(
+                job,
+                PipelineStage.TRANSLATE_SUBTITLES.value,
+                lambda: self.clip_engine.translate_subtitles(
+                    transcript.segments,
+                    selection,
+                ),
+            )
+            stage_manifest = self._finish_stage_record(
+                render_dir=render_dir,
+                manifest=stage_manifest,
+                stage=PipelineStage.TRANSLATE_SUBTITLES,
+                status=StageStatus.COMPLETED,
+            )
+            stage_manifest = self._start_stage_record(
+                render_dir=render_dir,
+                manifest=stage_manifest,
+                stage=PipelineStage.WRITE_SUBTITLES,
+                resume_strategy="reuse subtitle files when translation batches match",
+                fresh=True,
+            )
+            srt_path, ass_path = await self._run_stage(
+                job,
+                PipelineStage.WRITE_SUBTITLES.value,
+                lambda: asyncio.to_thread(
+                    self.clip_engine.write_subtitles,
+                    subtitle_items,
+                    selection,
+                    render_dir,
+                ),
+            )
+            stage_manifest = self._finish_stage_record(
+                render_dir=render_dir,
+                manifest=stage_manifest,
+                stage=PipelineStage.WRITE_SUBTITLES,
+                status=StageStatus.COMPLETED,
+                artifacts={"srt": srt_path, "ass": ass_path},
+            )
+            stage_manifest = self._start_stage_record(
+                render_dir=render_dir,
+                manifest=stage_manifest,
+                stage=PipelineStage.BURN_SUBTITLES,
+                resume_strategy=(
+                    "reuse burned video when subtitle files and source fingerprint match"
+                ),
+                fresh=True,
+            )
+            burned_path = await self._run_stage(
+                job,
+                PipelineStage.BURN_SUBTITLES.value,
+                lambda: self.clip_engine.burn_subtitles(
+                    temporary_clip,
+                    ass_path,
+                    render_dir,
+                ),
+            )
+            temporary_clip.unlink(missing_ok=True)
+            stage_manifest = self._finish_stage_record(
+                render_dir=render_dir,
+                manifest=stage_manifest,
+                stage=PipelineStage.BURN_SUBTITLES,
+                status=StageStatus.COMPLETED,
+                artifacts={"video": burned_path},
+            )
             metadata_path = render_dir / "youtube-metadata.json"
+            excerpt = self._transcript_excerpt(transcript, selection)
+            stage_manifest = self._start_stage_record(
+                render_dir=render_dir,
+                manifest=stage_manifest,
+                stage=PipelineStage.GENERATE_METADATA,
+                resume_strategy="reuse generated metadata",
+                fresh=True,
+            )
             await self._run_stage(
                 job,
-                "metadata_generation",
+                PipelineStage.GENERATE_METADATA.value,
                 lambda: self.publish_engine.generate(
                     source_metadata=source.metadata,
                     summary=selection.summary,
-                    transcript_excerpt=self._transcript_excerpt(transcript, selection),
+                    transcript_excerpt=excerpt,
                     destination=metadata_path,
                 ),
+            )
+            stage_manifest = self._finish_stage_record(
+                render_dir=render_dir,
+                manifest=stage_manifest,
+                stage=PipelineStage.GENERATE_METADATA,
+                status=StageStatus.COMPLETED,
+                artifacts={"youtube_metadata": metadata_path},
+            )
+            stage_manifest = self._start_stage_record(
+                render_dir=render_dir,
+                manifest=stage_manifest,
+                stage=PipelineStage.VALIDATE_RENDER,
+                resume_strategy="render is publishable; reuse ready render by default",
+                fresh=True,
+            )
+            await self._run_stage(
+                job,
+                PipelineStage.VALIDATE_RENDER.value,
+                lambda: asyncio.to_thread(
+                    self.render_validator.validate,
+                    render_dir=render_dir,
+                    expected_segments=selected_segments,
+                    subtitle_items=subtitle_items,
+                ),
+            )
+            self._finish_stage_record(
+                render_dir=render_dir,
+                manifest=stage_manifest,
+                stage=PipelineStage.VALIDATE_RENDER,
+                status=StageStatus.COMPLETED,
             )
             render = self.video_store.write_render(
                 video_id=source.metadata.video_id,
@@ -931,20 +1087,20 @@ class JobService:
                 exc.error_code,
             )
             self._fail_job(job, exc)
+            self._mark_failed_direct_render_stage(job)
             self._write_failed_direct_render_manifest(job)
         except Exception as exc:
             get_job_logger(job.job_id, job.output_dir).exception(
                 "Unexpected direct render pipeline failure"
             )
-            self._fail_job(
-                job,
-                InsightCastError(
-                    ErrorCode.VIDEO_RENDER_FAILED,
-                    "Direct render pipeline failed.",
-                    details={"reason": str(exc)},
-                    stage="rendering",
-                ),
+            error = InsightCastError(
+                ErrorCode.VIDEO_RENDER_FAILED,
+                "Direct render pipeline failed.",
+                details={"reason": str(exc)},
+                stage=getattr(exc, "stage", None) or "rendering",
             )
+            self._fail_job(job, error)
+            self._mark_failed_direct_render_stage(job)
             self._write_failed_direct_render_manifest(job)
 
     def _set_status(
@@ -1370,6 +1526,31 @@ class JobService:
         )
         job.output_dir = render.directory
         job.manifest_path = render.manifest_path
+
+    def _mark_failed_direct_render_stage(self, job: DirectRenderJob) -> None:
+        if job.render_id is None or job.error is None:
+            return
+        failed_stage = job.error.stage or "rendering"
+        known_stages = {stage.value for stage in PipelineStage}
+        if failed_stage not in known_stages:
+            return
+        stage_path = self._stage_manifest_path(job.output_dir)
+        if not stage_path.exists():
+            return
+        manifest = self._load_stage_manifest_or_new(
+            render_dir=job.output_dir,
+            job_id=job.job_id,
+            render_id=job.render_id,
+            candidate_id=None,
+        )
+        self._finish_stage_record(
+            render_dir=job.output_dir,
+            manifest=manifest,
+            stage=PipelineStage(failed_stage),
+            status=StageStatus.FAILED,
+            error=job.error,
+            resume_strategy=f"rerun render to resume from {failed_stage}",
+        )
 
     @staticmethod
     def _as_job_error(exc: Exception, stage: str | None) -> JobError:

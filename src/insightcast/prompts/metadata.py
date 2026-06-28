@@ -1,4 +1,4 @@
-import json
+from insightcast.prompts.serialization import compact_json
 
 PROMPT_VERSION = "metadata-v5"
 SYSTEM_PROMPT = """Create evidence-grounded Traditional Chinese YouTube metadata for an
@@ -43,7 +43,7 @@ def build_user_prompt(
     summary: str,
     transcript_excerpt: str,
 ) -> str:
-    return json.dumps(
+    return compact_json(
         {
             "source_title": source_title,
             "summary": summary,
@@ -122,7 +122,5 @@ def build_user_prompt(
                 "Use only people, organizations, subjects, and concepts supported "
                 "by the selected segment."
             ),
-        },
-        ensure_ascii=False,
-        indent=2,
+        }
     )

@@ -88,6 +88,17 @@ def log_task_transcription_progress(job: BaseJob, fields: dict[str, Any]) -> Non
     )
 
 
+def log_task_llm_telemetry(job: BaseJob, fields: dict[str, Any]) -> None:
+    event = str(fields.get("event", "unknown"))
+    log = _TASK_LOGGER.warning if event == "failed" else _TASK_LOGGER.info
+    log(
+        "llm_telemetry job_id=%s type=%s %s",
+        job.job_id,
+        job.job_type,
+        format_log_fields(fields),
+    )
+
+
 def log_task_failure(job: BaseJob, error: JobError) -> None:
     _TASK_LOGGER.error(
         "task job_id=%s type=%s event=failed error_code=%s stage=%s",

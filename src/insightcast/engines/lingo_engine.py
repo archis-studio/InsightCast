@@ -96,6 +96,7 @@ class LingoEngine:
                 ]
             ),
             response_model=TranslationResponse,
+            trace_name="translate_subtitles",
         )
         source_ids = [segment.segment_id for segment in batch]
         translation_ids = [translation.segment_id for translation in response.items]
@@ -128,6 +129,7 @@ class LingoEngine:
                     validation_error=validation_error,
                 ),
                 response_model=TranslationResponse,
+                trace_name="translate_subtitles_repair",
             )
             repair_ids = [translation.segment_id for translation in repair_response.items]
             repair_unreadable = next(

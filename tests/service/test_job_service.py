@@ -26,6 +26,7 @@ from insightcast.engines.curator_engine import (
 from insightcast.engines.lingo_engine import SubtitleItem
 from insightcast.engines.publish_engine import GeneratedYouTubeMetadata
 from insightcast.engines.source_engine import SourceResult
+from insightcast.infrastructure.openai_client import emit_llm_telemetry
 from insightcast.infrastructure.transcription.openai_transcription_client import (
     emit_transcription_progress,
 )
@@ -193,6 +194,20 @@ class FakeCurator:
 
     async def discover_topics(self, **_kwargs: object) -> TopicDiscoveryResponse:
         self.discovery_calls += 1
+        emit_llm_telemetry(
+            {
+                "event": "completed",
+                "trace_name": "topic_discovery",
+                "model": "gpt-curator",
+                "response_model": "TopicDiscoveryResponse",
+                "attempt": 1,
+                "system_chars": 10,
+                "user_chars": 20,
+                "input_tokens": 5,
+                "output_tokens": 3,
+                "total_tokens": 8,
+            }
+        )
         return TopicDiscoveryResponse(
             topics=[
                 discovered_topic("T1", 0, 600, 0.95),
@@ -996,7 +1011,19 @@ async def test_direct_render_uses_video_level_custom_directory(tmp_path: Path) -
         "subtitles.zh-TW.srt",
         "subtitles.bilingual.ass",
         "youtube-metadata.json",
+        "stage-manifest.json",
     }
+
+    payload = json.loads((job.output_dir / "stage-manifest.json").read_text(encoding="utf-8"))
+    assert [stage["stage"] for stage in payload["stages"]] == [
+        "cut_clip",
+        "translate_subtitles",
+        "write_subtitles",
+        "burn_subtitles",
+        "generate_metadata",
+        "validate_render",
+    ]
+    assert all(stage["status"] == "completed" for stage in payload["stages"])
 
 
 @pytest.mark.asyncio
@@ -1201,6 +1228,12 @@ async def test_pipeline_log_records_analysis_and_render_stage_timings(
     assert "source_cache_miss" in log
     assert "transcription_progress video_id='abc123DEF_-' event='planned'" in log
     assert "transcription_progress video_id='abc123DEF_-' event='completed'" in log
+    assert (
+        "llm_telemetry event='completed' trace_name='topic_discovery' "
+        "model='gpt-curator'"
+    ) in log
+    assert "input_tokens=5" in log
+    assert "total_tokens=8" in log
     assert "processed_chunks=2" in log
     assert "chunk_count=2" in log
     for stage in (

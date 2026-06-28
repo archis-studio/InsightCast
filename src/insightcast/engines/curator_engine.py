@@ -8,6 +8,7 @@ from insightcast.core.exceptions import InsightCastError
 from insightcast.domain.enums import ErrorCode
 from insightcast.domain.models import Candidate, Transcript, TranscriptSegment
 from insightcast.prompts import curator, topic_discovery
+from insightcast.prompts.serialization import serialize_transcript_segments_for_prompt
 
 ACCEPTED_DURATION_TOLERANCE_SECONDS = 60
 FINAL_DURATION_SEGMENT_TOLERANCE_SECONDS = 30
@@ -76,13 +77,12 @@ class CuratorEngine:
                 model=self.model,
                 system_prompt=topic_discovery.SYSTEM_PROMPT,
                 user_prompt=topic_discovery.build_user_prompt(
-                    transcript=[
-                        segment.model_dump(mode="json") for segment in transcript.segments
-                    ],
+                    transcript=serialize_transcript_segments_for_prompt(transcript.segments),
                     topic_pool_size=topic_pool_size,
                     validation_feedback=feedback,
                 ),
                 response_model=TopicDiscoveryResponse,
+                trace_name="topic_discovery",
             )
             response = TopicDiscoveryResponse(
                 topics=self._normalize_topics(
@@ -276,9 +276,7 @@ class CuratorEngine:
                 model=self.model,
                 system_prompt=curator.SYSTEM_PROMPT,
                 user_prompt=curator.build_user_prompt(
-                    transcript=[
-                        segment.model_dump(mode="json") for segment in prompt_segments
-                    ],
+                    transcript=serialize_transcript_segments_for_prompt(prompt_segments),
                     topics=[topic.model_dump(mode="json") for topic in topics.topics],
                     candidate_count=candidate_count,
                     target_min_duration_seconds=target_min_duration_seconds,
@@ -292,6 +290,7 @@ class CuratorEngine:
                     transcript_is_complete=transcript_is_complete,
                 ),
                 response_model=CuratorResponse,
+                trace_name="candidate_selection",
             )
             normalized_candidates, normalization_errors = self._normalize_candidates(
                 response.candidates,

@@ -41,6 +41,7 @@ class PublishEngine:
                 transcript_excerpt=transcript_excerpt,
             ),
             response_model=GeneratedYouTubeMetadata,
+            trace_name="generate_metadata",
         )
         self.writer.write_json(
             destination,
@@ -54,4 +55,3 @@ class PublishEngine:
             },
         )
         return generated
-

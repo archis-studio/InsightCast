@@ -9,6 +9,7 @@ import pytest
 from insightcast.core.logging import (
     get_job_logger,
     log_task_failure,
+    log_task_llm_telemetry,
     log_task_stage,
     log_task_status,
 )
@@ -137,6 +138,42 @@ def test_log_task_failure_emits_expected_error_message_without_traceback(
     assert record.getMessage() == (
         "task job_id=job-1 type=ANALYSIS event=failed "
         "error_code=TRANSCRIPTION_FAILED stage=unknown"
+    )
+
+
+def test_log_task_llm_telemetry_emits_expected_console_message(
+    tmp_path: Path,
+    task_log_records: list[logging.LogRecord],
+) -> None:
+    job = make_job(tmp_path)
+
+    log_task_llm_telemetry(
+        job,
+        {
+            "event": "completed",
+            "trace_name": "candidate_selection",
+            "model": "gpt-5.4-mini",
+            "input_tokens": 100,
+            "total_tokens": 125,
+        },
+    )
+
+    [record] = task_log_records
+    assert record.name == "insightcast.task"
+    assert record.levelno == logging.INFO
+    assert record.msg == "llm_telemetry job_id=%s type=%s %s"
+    assert record.args == (
+        job.job_id,
+        job.job_type,
+        (
+            "event='completed' trace_name='candidate_selection' "
+            "model='gpt-5.4-mini' input_tokens=100 total_tokens=125"
+        ),
+    )
+    assert record.getMessage() == (
+        "llm_telemetry job_id=job-1 type=ANALYSIS event='completed' "
+        "trace_name='candidate_selection' model='gpt-5.4-mini' "
+        "input_tokens=100 total_tokens=125"
     )
 
 

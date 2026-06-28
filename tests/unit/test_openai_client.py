@@ -1,3 +1,4 @@
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -22,6 +23,8 @@ class FakeResponses:
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
+        if hasattr(outcome, "output_parsed"):
+            return outcome
         return SimpleNamespace(output_parsed=outcome)
 
 
@@ -121,3 +124,39 @@ async def test_structured_response_failure_is_converted_without_prompt_contents(
 
     assert exc_info.value.error_code == ErrorCode.LLM_REQUEST_FAILED
     assert exc_info.value.details == {"model": "gpt-test", "reason": "secret transport details"}
+
+
+@pytest.mark.asyncio
+async def test_structured_response_logs_prompt_sizes_and_usage_without_prompt_contents(
+    caplog,
+) -> None:
+    caplog.set_level(logging.INFO)
+    usage = SimpleNamespace(input_tokens=12, output_tokens=3, total_tokens=15)
+    responses = FakeResponses(
+        [SimpleNamespace(output_parsed=ResultModel(value="ok"), usage=usage)]
+    )
+    client = StructuredOpenAIClient(
+        SimpleNamespace(responses=responses),
+        timeout_seconds=30,
+        max_retries=0,
+    )
+
+    result = await client.parse(
+        model="gpt-test",
+        system_prompt="system secret",
+        user_prompt="user private transcript",
+        response_model=ResultModel,
+        trace_name="topic_discovery",
+    )
+
+    assert result.value == "ok"
+    log_output = caplog.text
+    assert "llm_request_completed" in log_output
+    assert "trace_name=topic_discovery" in log_output
+    assert "system_chars=13" in log_output
+    assert "user_chars=23" in log_output
+    assert "input_tokens=12" in log_output
+    assert "output_tokens=3" in log_output
+    assert "total_tokens=15" in log_output
+    assert "system secret" not in log_output
+    assert "user private transcript" not in log_output
