@@ -216,7 +216,7 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
     payload = json.loads(prompt)
     system = metadata.SYSTEM_PROMPT.lower()
 
-    assert metadata.PROMPT_VERSION == "metadata-v6"
+    assert metadata.PROMPT_VERSION == "metadata-v8"
     assert "traditional chinese" in system
     assert "youtube metadata" in system
     assert "translated highlight" in system
@@ -240,12 +240,29 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
     }
     assert payload["title_strategy"] == [
         "choose_the_title_frame_that_best_fits_the_clip",
+        "prefer_topic_colon_narrative_structure_when_natural",
+        "do_not_add_author_host_or_guest_names_by_default",
         "use_candidate_suggested_title_as_the_segment_semantic_center",
         "use_source_title_and_description_as_context_boundaries",
         "lead_with_a_specific_idea_risk_gain_or_tension",
         "make_the_viewer_feel_the_practical_stakes",
         "keep_one_clear_hook_without_clickbait",
         "use_one_source_anchor_for_trust_when_helpful",
+    ]
+    assert payload["title_variant_requirements"]["variant_count"] == 4
+    assert payload["title_variant_requirements"]["primary_title_must_match_one_variant"]
+    assert payload["title_variant_requirements"]["preferred_structure"] == (
+        "<topic>：<narrative>"
+    )
+    assert [
+        item["strategy"] for item in payload["title_variant_requirements"]["strategies"]
+    ] == ["conceptual_reframe", "pain_point", "mechanism", "clean_hook"]
+    assert payload["title_variant_requirements"]["choose_primary_by"] == [
+        "truthfulness_to_segment",
+        "topic_colon_narrative_readability",
+        "viewer_payoff_clarity",
+        "source_context_alignment_without_author_name",
+        "traditional_chinese_youtube_readability",
     ]
     assert payload["candidate_suggested_title"] == "Candidate title"
     assert payload["source_description_excerpt"] == "Original source description"
@@ -301,7 +318,7 @@ def test_metadata_prompt_preserves_source_title_equity_for_highlight_metadata() 
     payload = json.loads(prompt)
     system = metadata.SYSTEM_PROMPT.lower()
 
-    assert metadata.PROMPT_VERSION == "metadata-v6"
+    assert metadata.PROMPT_VERSION == "metadata-v8"
     assert "source title" in system
     assert "highlight" in system
     assert "traditional chinese title" in system
@@ -309,6 +326,7 @@ def test_metadata_prompt_preserves_source_title_equity_for_highlight_metadata() 
     assert "packaging editor" in system
     assert payload["source_title_retention_strategy"] == [
         "preserve_one_recognizable_source_title_element_when_it_adds_trust",
+        "do_not_add_author_host_or_guest_names_by_default",
         "do_not_force_the_full_original_title",
         "do_not_let_source_title_overpower_the_clip_value",
         "blend_source_anchor_with_selected_highlight_focus",
@@ -323,9 +341,10 @@ def test_metadata_prompt_preserves_source_title_equity_for_highlight_metadata() 
         "for Traditional Chinese viewers, not as a replacement for the full original video."
     )
     assert payload["title_style_examples"] == [
-        "AI 認知外包：你省下時間，也可能交出判斷力",
-        "為什麼你越用 AI 越不會思考？MIT 研究給了一個警訊",
-        "別再只改 Prompt：Karpathy 的三層 AI 工作法",
+        "AI 學習錯覺：你不是變強了，只是更快產出看似正確的答案",
+        "新手寫程式卡關：AI 可能正在放大你的誤解",
+        "AI 輔助學習的陷阱：能跑的程式不等於真正理解",
+        "學程式別急著用 AI：先搞懂這個理解錯覺",
     ]
     assert payload["description_structure"] == [
         "one_sentence_hook",

@@ -19,6 +19,28 @@ class FakeStructuredClient:
         self.calls.append(kwargs)
         return GeneratedYouTubeMetadata(
             title="知識標題",
+            title_variants=[
+                {
+                    "title": "知識標題",
+                    "strategy": "conceptual_reframe",
+                    "rationale": "顛覆原本看法。",
+                },
+                {
+                    "title": "痛點標題",
+                    "strategy": "pain_point",
+                    "rationale": "直指觀眾痛點。",
+                },
+                {
+                    "title": "機制標題",
+                    "strategy": "mechanism",
+                    "rationale": "說明底層機制。",
+                },
+                {
+                    "title": "簡短標題",
+                    "strategy": "clean_hook",
+                    "rationale": "乾淨保留懸念。",
+                },
+            ],
             description="完整說明",
             tags=["知識", "AI"],
         )
@@ -54,10 +76,15 @@ async def test_publish_engine_generates_private_metadata_and_writes_traceable_js
     payload = json.loads(destination.read_text(encoding="utf-8"))
     assert metadata.privacy_status == "private"
     assert payload["generated"]["title"] == "知識標題"
+    assert payload["generated"]["title_variants"][0] == {
+        "title": "知識標題",
+        "strategy": "conceptual_reframe",
+        "rationale": "顛覆原本看法。",
+    }
     assert payload["generated"]["privacy_status"] == "private"
     assert payload["source"]["video_id"] == "abc123DEF_-"
     assert payload["trace"]["model"] == "gpt-metadata"
-    assert payload["trace"]["prompt_version"] == "metadata-v6"
+    assert payload["trace"]["prompt_version"] == "metadata-v8"
     call_prompt = json.loads(str(client.calls[0]["user_prompt"]))
     assert call_prompt["candidate_suggested_title"] == "Candidate title"
     assert call_prompt["source_description_excerpt"] == "Source description"

@@ -345,6 +345,28 @@ class FakePublish:
         Path(kwargs["destination"]).write_text("{}", encoding="utf-8")
         return GeneratedYouTubeMetadata(
             title="Title",
+            title_variants=[
+                {
+                    "title": "Title",
+                    "strategy": "conceptual_reframe",
+                    "rationale": "Conceptual reframe.",
+                },
+                {
+                    "title": "Pain title",
+                    "strategy": "pain_point",
+                    "rationale": "Pain point.",
+                },
+                {
+                    "title": "Mechanism title",
+                    "strategy": "mechanism",
+                    "rationale": "Mechanism.",
+                },
+                {
+                    "title": "Clean hook title",
+                    "strategy": "clean_hook",
+                    "rationale": "Clean hook.",
+                },
+            ],
             description="Description",
             tags=["tag"],
         )

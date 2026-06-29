@@ -11,8 +11,20 @@ class PublishModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class TitleVariant(PublishModel):
+    title: str = Field(min_length=1)
+    strategy: Literal[
+        "conceptual_reframe",
+        "pain_point",
+        "mechanism",
+        "clean_hook",
+    ]
+    rationale: str = Field(min_length=1)
+
+
 class GeneratedYouTubeMetadata(PublishModel):
     title: str = Field(min_length=1)
+    title_variants: list[TitleVariant] = Field(min_length=4, max_length=4)
     description: str = Field(min_length=1)
     tags: list[str]
     privacy_status: Literal["private", "unlisted", "public"] = "private"
