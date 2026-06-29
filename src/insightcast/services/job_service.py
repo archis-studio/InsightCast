@@ -702,6 +702,7 @@ class JobService:
                     excerpt=excerpt,
                     metadata_path=metadata_path: self.publish_engine.generate(
                         source_metadata=source_metadata,
+                        candidate_suggested_title=candidate.suggested_title,
                         summary=candidate.summary,
                         transcript_excerpt=excerpt,
                         destination=metadata_path,
@@ -1048,6 +1049,7 @@ class JobService:
                 PipelineStage.GENERATE_METADATA.value,
                 lambda: self.publish_engine.generate(
                     source_metadata=source.metadata,
+                    candidate_suggested_title=selection.suggested_title,
                     summary=selection.summary,
                     transcript_excerpt=excerpt,
                     destination=metadata_path,

@@ -28,6 +28,7 @@ class PublishEngine:
         self,
         *,
         source_metadata: YouTubeMetadata,
+        candidate_suggested_title: str | None = None,
         summary: str,
         transcript_excerpt: str,
         destination: Path,
@@ -37,6 +38,8 @@ class PublishEngine:
             system_prompt=metadata.SYSTEM_PROMPT,
             user_prompt=metadata.build_user_prompt(
                 source_title=source_metadata.title,
+                source_description=source_metadata.description,
+                candidate_suggested_title=candidate_suggested_title,
                 summary=summary,
                 transcript_excerpt=transcript_excerpt,
             ),

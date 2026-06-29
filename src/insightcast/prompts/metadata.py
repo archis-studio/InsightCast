@@ -1,17 +1,22 @@
 from insightcast.prompts.serialization import compact_json
 
-PROMPT_VERSION = "metadata-v5"
+PROMPT_VERSION = "metadata-v6"
 SYSTEM_PROMPT = """Create evidence-grounded Traditional Chinese YouTube metadata for an
 InsightCast translated knowledge highlight from a foreign-language source video.
 
 You are the packaging editor for InsightCast. The brand voice is editorial, precise,
 premium but plainspoken, and curious without hype. Package the clip so Traditional Chinese
-viewers can quickly decide why this specific idea is worth their attention. The
-Traditional Chinese title should lead with a concrete viewer outcome, useful tension, or
-central insight from the selected segment. It should make the viewer sense what they can
-avoid, gain, notice, or decide differently after watching. It should usually name the
-selected idea rather than pretending to summarize the whole episode, but natural generic
-framing such as 這段影片 or 作者說 may be used when it creates a more human title.
+viewers can quickly decide why this specific idea is worth their attention.
+
+Use the candidate suggested title as the selected segment's semantic center. Use the
+source title and source description excerpt as attribution and context boundaries. The
+Traditional Chinese title should blend the source's main promise or tension with the
+candidate segment's concrete insight. It should make the viewer sense what they can avoid,
+gain, notice, or decide differently after watching. It should usually name the selected
+idea rather than pretending to summarize the whole episode, but natural generic framing
+such as 這段影片 or 作者說 may be used when it creates a more human title.
+The title should lead with a concrete viewer outcome, useful tension, or central insight,
+while staying anchored to the selected candidate and original source context.
 
 Preserve one recognizable source title, guest, creator, show, or concept element only when
 it improves trust, searchability, or attribution. Do not force the full original title into
@@ -40,12 +45,17 @@ privacy status that defaults to private."""
 def build_user_prompt(
     *,
     source_title: str,
+    source_description: str | None = None,
+    candidate_suggested_title: str | None = None,
     summary: str,
     transcript_excerpt: str,
 ) -> str:
+    source_description_excerpt = _source_description_excerpt(source_description)
     return compact_json(
         {
             "source_title": source_title,
+            "source_description_excerpt": source_description_excerpt,
+            "candidate_suggested_title": candidate_suggested_title,
             "summary": summary,
             "transcript_excerpt": transcript_excerpt,
             "brand_positioning": {
@@ -63,11 +73,21 @@ def build_user_prompt(
             },
             "title_strategy": [
                 "choose_the_title_frame_that_best_fits_the_clip",
+                "use_candidate_suggested_title_as_the_segment_semantic_center",
+                "use_source_title_and_description_as_context_boundaries",
                 "lead_with_a_specific_idea_risk_gain_or_tension",
                 "make_the_viewer_feel_the_practical_stakes",
                 "keep_one_clear_hook_without_clickbait",
                 "use_one_source_anchor_for_trust_when_helpful",
             ],
+            "title_alignment_contract": {
+                "must_reflect_candidate_segment": True,
+                "must_not_drift_beyond_source_description_context": True,
+                "should_preserve_source_title_promise_or_tension_when_relevant": True,
+                "should_preserve_candidate_suggested_title_meaning": True,
+                "may_rewrite_for_traditional_chinese_youtube_packaging": True,
+                "must_not_overpromise_beyond_summary_or_transcript": True,
+            },
             "title_frame_options": [
                 "focal_point_colon_narrative",
                 "risk_or_cost_warning",
@@ -124,3 +144,14 @@ def build_user_prompt(
             ),
         }
     )
+
+
+def _source_description_excerpt(source_description: str | None) -> str | None:
+    if source_description is None:
+        return None
+    cleaned = " ".join(source_description.split())
+    if not cleaned:
+        return None
+    if len(cleaned) <= 1200:
+        return cleaned
+    return f"{cleaned[:1200].rstrip()}…"

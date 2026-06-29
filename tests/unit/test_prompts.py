@@ -44,6 +44,8 @@ def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None
     )
     metadata_user = metadata.build_user_prompt(
         source_title="Source",
+        source_description="Original source description",
+        candidate_suggested_title="Candidate title",
         summary="Summary",
         transcript_excerpt="Excerpt",
     )
@@ -206,13 +208,15 @@ def test_topic_discovery_prompt_ranks_distinct_important_topics() -> None:
 def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
     prompt = metadata.build_user_prompt(
         source_title="Foreign source",
+        source_description="Original source description",
+        candidate_suggested_title="Candidate title",
         summary="A supported central finding",
         transcript_excerpt="Evidence and conclusion",
     )
     payload = json.loads(prompt)
     system = metadata.SYSTEM_PROMPT.lower()
 
-    assert metadata.PROMPT_VERSION == "metadata-v5"
+    assert metadata.PROMPT_VERSION == "metadata-v6"
     assert "traditional chinese" in system
     assert "youtube metadata" in system
     assert "translated highlight" in system
@@ -236,11 +240,23 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
     }
     assert payload["title_strategy"] == [
         "choose_the_title_frame_that_best_fits_the_clip",
+        "use_candidate_suggested_title_as_the_segment_semantic_center",
+        "use_source_title_and_description_as_context_boundaries",
         "lead_with_a_specific_idea_risk_gain_or_tension",
         "make_the_viewer_feel_the_practical_stakes",
         "keep_one_clear_hook_without_clickbait",
         "use_one_source_anchor_for_trust_when_helpful",
     ]
+    assert payload["candidate_suggested_title"] == "Candidate title"
+    assert payload["source_description_excerpt"] == "Original source description"
+    assert payload["title_alignment_contract"] == {
+        "must_reflect_candidate_segment": True,
+        "must_not_drift_beyond_source_description_context": True,
+        "should_preserve_source_title_promise_or_tension_when_relevant": True,
+        "should_preserve_candidate_suggested_title_meaning": True,
+        "may_rewrite_for_traditional_chinese_youtube_packaging": True,
+        "must_not_overpromise_beyond_summary_or_transcript": True,
+    }
     assert payload["title_frame_options"] == [
         "focal_point_colon_narrative",
         "risk_or_cost_warning",
@@ -275,13 +291,17 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
 def test_metadata_prompt_preserves_source_title_equity_for_highlight_metadata() -> None:
     prompt = metadata.build_user_prompt(
         source_title="How to Speak",
+        source_description=(
+            "This source explains public speaking, contribution, and memorable endings."
+        ),
+        candidate_suggested_title="How vision makes a talk memorable",
         summary="The segment explains how vision and contribution make talks persuasive.",
         transcript_excerpt="Vision, contribution, and a strong ending make a talk memorable.",
     )
     payload = json.loads(prompt)
     system = metadata.SYSTEM_PROMPT.lower()
 
-    assert metadata.PROMPT_VERSION == "metadata-v5"
+    assert metadata.PROMPT_VERSION == "metadata-v6"
     assert "source title" in system
     assert "highlight" in system
     assert "traditional chinese title" in system
@@ -293,6 +313,11 @@ def test_metadata_prompt_preserves_source_title_equity_for_highlight_metadata() 
         "do_not_let_source_title_overpower_the_clip_value",
         "blend_source_anchor_with_selected_highlight_focus",
     ]
+    assert payload["candidate_suggested_title"] == "How vision makes a talk memorable"
+    assert (
+        payload["source_description_excerpt"]
+        == "This source explains public speaking, contribution, and memorable endings."
+    )
     assert payload["highlight_positioning"] == (
         "Package the selected segment as a standalone InsightCast knowledge highlight "
         "for Traditional Chinese viewers, not as a replacement for the full original video."
