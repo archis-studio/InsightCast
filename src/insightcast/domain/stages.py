@@ -80,7 +80,10 @@ class StageManifest(DomainModel):
     @computed_field
     @property
     def resume_from(self) -> str | None:
-        for record in reversed(self.stages):
-            if record.status in {StageStatus.FAILED, StageStatus.RUNNING, StageStatus.QUEUED}:
-                return record.stage.value
+        if (
+            self.stages
+            and self.stages[-1].status
+            in {StageStatus.FAILED, StageStatus.RUNNING, StageStatus.QUEUED}
+        ):
+            return self.stages[-1].stage.value
         return None

@@ -184,6 +184,26 @@ class JobService:
     def list_render_batches(self, job_id: str) -> list[RenderBatch]:
         return self.get_analysis_job(job_id).render_batches
 
+    def _resumable_failed_render_batch(
+        self,
+        job: AnalysisJob,
+        candidate_ids: list[str],
+    ) -> RenderBatch | None:
+        for batch in reversed(job.render_batches):
+            if batch.status is not JobStatus.FAILED:
+                continue
+            if not set(candidate_ids).issubset(set(batch.candidate_ids)):
+                continue
+            if all(
+                (
+                    result := batch.candidate_results.get(candidate_id)
+                ) is not None
+                and result.error is not None
+                for candidate_id in candidate_ids
+            ):
+                return batch
+        return None
+
     async def create_render(
         self,
         job_id: str,
@@ -222,9 +242,27 @@ class JobService:
                 stage="rendering",
             )
 
+        assert job.video_id is not None
+        if not request.force_render:
+            resumable = self._resumable_failed_render_batch(job, request.candidate_ids)
+            if resumable is not None:
+                for candidate_id in request.candidate_ids:
+                    resumable.candidate_results.pop(candidate_id, None)
+                resumable.status = JobStatus.QUEUED
+                resumable.message = "Render batch is queued for resume."
+                resumable.updated_at = self.clock()
+                await self.queue.put(
+                    WorkItem(
+                        kind=WorkKind.ANALYSIS_RENDER,
+                        job_id=job_id,
+                        render_id=resumable.render_id,
+                    )
+                )
+                self._touch(job)
+                return resumable
+
         created_at = self.clock()
         render_id = build_run_id(created_at, self.id_factory())
-        assert job.video_id is not None
         output_dir = self.video_store.render_dir(
             job.video_id,
             render_id,
@@ -585,31 +623,54 @@ class JobService:
                     if segment.end_seconds > candidate.start_seconds
                     and segment.start_seconds < candidate.end_seconds
                 ]
-                stage_manifest = self._start_stage_record(
-                    render_dir=candidate_dir,
-                    manifest=stage_manifest,
-                    stage=PipelineStage.CUT_CLIP,
-                    resume_strategy=(
-                        "rerun cut_clip unless a completed render manifest "
-                        "can be reused"
-                    ),
-                    fresh=True,
+                completed_cut = self._latest_completed_stage(
+                    stage_manifest,
+                    PipelineStage.CUT_CLIP,
                 )
-                temporary_clip = await self._run_stage(
-                    job,
-                    PipelineStage.CUT_CLIP.value,
-                    lambda candidate=candidate: self.clip_engine.cut_clip(
-                        job.source_artifacts.source_video,
-                        candidate,
-                        self.work_root / job.job_id / batch.render_id,
-                    ),
+                reusable_clip = self._stage_artifact_path(
+                    completed_cut,
+                    "temporary_clip",
                 )
-                stage_manifest = self._finish_stage_record(
-                    render_dir=candidate_dir,
-                    manifest=stage_manifest,
-                    stage=PipelineStage.CUT_CLIP,
-                    status=StageStatus.COMPLETED,
-                )
+                if reusable_clip is not None and reusable_clip.is_file():
+                    temporary_clip = reusable_clip
+                    stage_manifest = self._append_stage_record(
+                        render_dir=candidate_dir,
+                        manifest=stage_manifest,
+                        record=StageRecord(
+                            stage=PipelineStage.CUT_CLIP,
+                            status=StageStatus.SKIPPED,
+                            completed_at=self.clock(),
+                            artifacts={"temporary_clip": temporary_clip},
+                            resume_strategy="reuse completed cut clip",
+                            reused=True,
+                        ),
+                    )
+                else:
+                    stage_manifest = self._start_stage_record(
+                        render_dir=candidate_dir,
+                        manifest=stage_manifest,
+                        stage=PipelineStage.CUT_CLIP,
+                        resume_strategy=(
+                            "rerun cut_clip unless a completed cut clip can be reused"
+                        ),
+                        fresh=True,
+                    )
+                    temporary_clip = await self._run_stage(
+                        job,
+                        PipelineStage.CUT_CLIP.value,
+                        lambda candidate=candidate: self.clip_engine.cut_clip(
+                            job.source_artifacts.source_video,
+                            candidate,
+                            self.work_root / job.job_id / batch.render_id,
+                        ),
+                    )
+                    stage_manifest = self._finish_stage_record(
+                        render_dir=candidate_dir,
+                        manifest=stage_manifest,
+                        stage=PipelineStage.CUT_CLIP,
+                        status=StageStatus.COMPLETED,
+                        artifacts={"temporary_clip": temporary_clip},
+                    )
                 stage_manifest = self._start_stage_record(
                     render_dir=candidate_dir,
                     manifest=stage_manifest,
@@ -945,7 +1006,7 @@ class JobService:
                 manifest=stage_manifest,
                 stage=PipelineStage.CUT_CLIP,
                 resume_strategy=(
-                    "rerun cut_clip unless a completed render manifest can be reused"
+                    "rerun cut_clip unless a completed cut clip can be reused"
                 ),
                 fresh=True,
             )
@@ -963,6 +1024,7 @@ class JobService:
                 manifest=stage_manifest,
                 stage=PipelineStage.CUT_CLIP,
                 status=StageStatus.COMPLETED,
+                artifacts={"temporary_clip": temporary_clip},
             )
             stage_manifest = self._start_stage_record(
                 render_dir=render_dir,
@@ -1310,8 +1372,9 @@ class JobService:
             result = await operation()
         except InsightCastError as exc:
             elapsed_seconds = perf_counter() - started_at
-            if exc.stage is None:
-                exc.stage = stage
+            if exc.stage is not None and exc.stage != stage:
+                exc.details.setdefault("inner_stage", exc.stage)
+            exc.stage = stage
             logger.error(
                 "stage_failed stage=%s elapsed_seconds=%.3f",
                 stage,
@@ -1534,6 +1597,25 @@ class JobService:
                 render_id=render_id,
                 candidate_id=candidate_id,
             )
+
+    @staticmethod
+    def _latest_completed_stage(
+        manifest: StageManifest,
+        stage: PipelineStage,
+    ) -> StageRecord | None:
+        for record in reversed(manifest.stages):
+            if record.stage == stage and record.status is StageStatus.COMPLETED:
+                return record
+        return None
+
+    @staticmethod
+    def _stage_artifact_path(record: StageRecord | None, key: str) -> Path | None:
+        if record is None:
+            return None
+        artifact = record.artifacts.get(key)
+        if artifact is None:
+            return None
+        return artifact
 
     def _append_stage_record(
         self,

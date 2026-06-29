@@ -17,6 +17,7 @@ from insightcast.domain.models import (
     Transcript,
     TranscriptSegment,
 )
+from insightcast.domain.stages import StageManifest
 from insightcast.engines.clip_engine import ClipArtifacts
 from insightcast.engines.curator_engine import (
     CurationResult,
@@ -260,6 +261,7 @@ class FakeClip:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.fail_candidates: set[str] = set()
+        self.fail_translate_candidates: set[str] = set()
 
     async def cut_clip(
         self,
@@ -278,6 +280,12 @@ class FakeClip:
         transcript_segments: list[TranscriptSegment],
         selection: Candidate,
     ) -> list[SubtitleItem]:
+        if selection.candidate_id in self.fail_translate_candidates:
+            raise InsightCastError(
+                ErrorCode.LLM_REQUEST_FAILED,
+                "llm failed",
+                stage="llm",
+            )
         return [
             SubtitleItem(
                 segment_id=segment.segment_id,
@@ -821,6 +829,53 @@ async def test_partial_render_failure_keeps_success_and_can_retry_failed_candida
     )
     await service.process(await service.queue.get())
     assert retry.status == JobStatus.COMPLETED
+    assert retry.render_id == batch.render_id
+    assert clip.calls == ["A", "B"]
+
+
+@pytest.mark.asyncio
+async def test_failed_candidate_render_resume_reports_pipeline_stage(
+    tmp_path: Path,
+) -> None:
+    service, _, clip = make_service(tmp_path)
+    job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+    await service.process(await service.queue.get())
+    clip.fail_translate_candidates = {"A"}
+
+    batch = await service.create_render(
+        job.job_id,
+        CandidateSelectionRequest(candidate_ids="A"),
+    )
+    await service.process(await service.queue.get())
+
+    payload = json.loads((batch.output_dir / "stage-manifest.json").read_text())
+    assert payload["stages"][-1]["stage"] == "translate_subtitles"
+    assert payload["stages"][-1]["error"]["stage"] == "translate_subtitles"
+    assert payload["stages"][-1]["error"]["details"]["inner_stage"] == "llm"
+    assert payload["stages"][-1]["resume_strategy"] == (
+        "rerun render to resume from translate_subtitles"
+    )
+    clip.fail_translate_candidates.clear()
+    retry = await service.create_render(
+        job.job_id,
+        CandidateSelectionRequest(candidate_ids="A"),
+    )
+    await service.process(await service.queue.get())
+
+    retry_payload = json.loads((retry.output_dir / "stage-manifest.json").read_text())
+    assert retry.render_id == batch.render_id
+    retry_manifest = StageManifest.model_validate_json(
+        (retry.output_dir / "stage-manifest.json").read_text()
+    )
+    assert retry_manifest.resume_from is None
+    skipped_cut = [
+        stage
+        for stage in retry_payload["stages"]
+        if stage["stage"] == "cut_clip" and stage["status"] == "skipped"
+    ][-1]
+    assert skipped_cut["reused"] is True
+    assert retry.status == JobStatus.COMPLETED
+    assert clip.calls == ["A"]
 
 
 @pytest.mark.asyncio
@@ -898,7 +953,9 @@ async def test_candidate_render_writes_stage_manifest(tmp_path: Path) -> None:
         "validate_render",
     ]
     assert all(stage["status"] == "completed" for stage in payload["stages"])
-    assert payload["stages"][0]["artifacts"] == {}
+    assert payload["stages"][0]["artifacts"]["temporary_clip"].endswith(
+        "A.unburned.mp4"
+    )
 
 
 @pytest.mark.asyncio
