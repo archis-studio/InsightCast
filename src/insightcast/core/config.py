@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     openai_transcription_model: str = "whisper-1"
     openai_transcription_max_upload_mb: int = Field(default=8, ge=1, le=25)
     openai_transcription_max_attempts: int = Field(default=3, ge=1, le=10)
+    openai_transcription_timeout_seconds: float = Field(default=240, gt=0)
     openai_transcription_retry_sleep_seconds: float = Field(default=0, ge=0)
     whisper_model_size: str = "large-v3"
     whisper_device: str = "auto"

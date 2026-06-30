@@ -105,6 +105,7 @@ class BaseJob(DomainModel):
     output_dir: Path
     source_artifacts: SourceArtifacts | None = None
     error: JobError | None = None
+    progress: dict[str, Any] | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

@@ -81,6 +81,7 @@ def _build_runtime(settings: Settings) -> tuple[JobService, FfmpegClient]:
             model=settings.openai_transcription_model,
             max_upload_mb=settings.openai_transcription_max_upload_mb,
             max_attempts=settings.openai_transcription_max_attempts,
+            request_timeout_seconds=settings.openai_transcription_timeout_seconds,
             retry_sleep_seconds=settings.openai_transcription_retry_sleep_seconds,
         )
     writer = FileJobWriter()

@@ -60,6 +60,32 @@ def test_openai_transcription_identity_uses_provider_model_language_and_schema()
     assert client.transcript_schema_version == 1
 
 
+@pytest.mark.asyncio
+async def test_openai_transcription_uses_configured_request_timeout(
+    tmp_path: Path,
+) -> None:
+    audio = tmp_path / "audio.mp3"
+    audio.write_bytes(b"audio")
+    transcriptions = FakeTranscriptions(
+        [
+            SimpleNamespace(
+                language="en",
+                duration=1,
+                segments=[SimpleNamespace(id=0, start=0, end=1, text="Text")],
+            )
+        ]
+    )
+    client = OpenAITranscriptionClient(
+        transcriptions,
+        request_timeout_seconds=240,
+        chunker=lambda *_: [AudioChunk(path=audio, offset_seconds=0)],
+    )
+
+    await client.transcribe(audio)
+
+    assert transcriptions.calls[0]["timeout"] == 240
+
+
 def test_local_whisper_identity_includes_model_size_and_device() -> None:
     client = LocalWhisperClient(model_size="small", device="cpu")
 
@@ -363,6 +389,9 @@ async def test_openai_transcription_emits_machine_readable_progress_events(
         ("completed_all", None, None),
     ]
     assert events[0]["chunk_count"] == 2
+    for event in events:
+        if event["event"] in {"started", "failed", "completed"}:
+            assert event["chunk_count"] == 2
     assert events[-1]["processed_chunks"] == 2
 
 

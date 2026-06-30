@@ -121,6 +121,7 @@ class AnalysisJobResponse(ApiModel):
     candidates: list[Candidate]
     render_batches: list[RenderBatch]
     error: JobError | None
+    progress: dict[str, Any] | None = None
     artifacts: dict[str, Any]
     created_at: datetime
     updated_at: datetime

@@ -1301,11 +1301,16 @@ class JobService:
 
         def emit_progress(fields: dict[str, Any]) -> None:
             enriched = {
+                "stage": "transcription",
                 "video_id": source.metadata.video_id,
                 **fields,
             }
-            logger.info("transcription_progress %s", format_log_fields(enriched))
-            log_task_transcription_progress(job, enriched)
+            job.progress = enriched.copy()
+            job.updated_at = self.clock()
+            log_fields = enriched.copy()
+            log_fields.pop("stage", None)
+            logger.info("transcription_progress %s", format_log_fields(log_fields))
+            log_task_transcription_progress(job, log_fields)
 
         with capture_transcription_progress(emit_progress):
             return await self.transcription_client.transcribe(

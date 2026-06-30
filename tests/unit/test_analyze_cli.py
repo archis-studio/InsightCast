@@ -50,6 +50,7 @@ def job_response(
     candidates: list[dict[str, object]] | None = None,
     error: dict[str, object] | None = None,
     artifacts: dict[str, object] | None = None,
+    progress: dict[str, object] | None = None,
 ) -> HttpResponse:
     resolved_artifacts = artifacts
     if resolved_artifacts is None:
@@ -65,6 +66,7 @@ def job_response(
             "candidates": candidates or [],
             "render_batches": [],
             "error": error,
+            "progress": progress,
             "artifacts": resolved_artifacts,
             "created_at": "2026-06-07T00:00:00Z",
             "updated_at": "2026-06-07T00:00:01Z",
@@ -311,6 +313,60 @@ def test_force_posts_reanalysis_request() -> None:
         {"youtube_url": YOUTUBE_URL, "force_reanalyze": True},
     )
     assert stderr.getvalue() == ""
+
+
+def test_prints_transcription_chunk_progress_when_available() -> None:
+    requester = ScriptedRequester(
+        [
+            healthy_response(),
+            queued_response(),
+            job_response(
+                "TRANSCRIBING",
+                "Transcribing English audio.",
+                progress={
+                    "stage": "transcription",
+                    "event": "started",
+                    "chunk_index": 1,
+                    "chunk_count": 5,
+                    "attempt": 2,
+                    "max_attempts": 3,
+                },
+            ),
+            job_response("WAITING_SELECTION", "Candidates are ready."),
+        ]
+    )
+
+    code, output, errors = execute(requester)
+
+    assert code == 0
+    assert errors == ""
+    assert "Transcription: chunk 2/5, attempt 2/3, event=started" in output
+
+
+def test_prints_transcription_progress_only_while_transcribing() -> None:
+    requester = ScriptedRequester(
+        [
+            healthy_response(),
+            queued_response(),
+            job_response(
+                "CURATING",
+                "Selecting complete candidate ranges.",
+                progress={
+                    "stage": "transcription",
+                    "event": "completed_all",
+                    "chunk_count": 2,
+                    "processed_chunks": 2,
+                },
+            ),
+            job_response("WAITING_SELECTION", "Candidates are ready."),
+        ]
+    )
+
+    code, output, errors = execute(requester)
+
+    assert code == 0
+    assert errors == ""
+    assert "Transcription:" not in output
 
 
 def test_polls_immediately_then_uses_configured_interval_and_prints_heartbeats() -> None:

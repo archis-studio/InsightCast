@@ -133,6 +133,7 @@ def test_ytdlp_js_runtime_can_be_disabled() -> None:
         ("analyze_poll_interval_seconds", 0),
         ("analyze_poll_interval_seconds", -1),
         ("openai_transcription_max_attempts", 0),
+        ("openai_transcription_timeout_seconds", 0),
         ("openai_transcription_retry_sleep_seconds", -1),
         ("openai_retry_sleep_seconds", -1),
         ("subtitle_chinese_font_size", 0),

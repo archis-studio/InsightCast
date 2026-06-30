@@ -57,6 +57,14 @@ class FakeService:
             output_dir=(self.tmp_path / "analysis").resolve(),
             video_id="abc123DEF_-",
             analysis_id="20260606-000000-analys",
+            progress={
+                "stage": "transcription",
+                "event": "started",
+                "chunk_index": 0,
+                "chunk_count": 3,
+                "attempt": 1,
+                "max_attempts": 3,
+            },
         )
 
     async def create_render(self, job_id: str, request: object) -> RenderBatch:
@@ -132,6 +140,14 @@ def test_analysis_routes_queue_get_render_and_list(tmp_path: Path) -> None:
     assert service.created[0]["candidate_count"] == 2
     assert fetched.status_code == 200
     assert fetched.json()["status"] == "WAITING_SELECTION"
+    assert fetched.json()["progress"] == {
+        "stage": "transcription",
+        "event": "started",
+        "chunk_index": 0,
+        "chunk_count": 3,
+        "attempt": 1,
+        "max_attempts": 3,
+    }
     assert "artifacts" in fetched.json()
     assert render.status_code == 202
     assert render.json()["render_id"] == "render-1"

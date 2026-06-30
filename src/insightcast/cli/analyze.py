@@ -40,6 +40,28 @@ def _print_line(stdout: TextIO, now: Callable[[], datetime], message: str) -> No
     print(f"[{_timestamp(now)}] {message}", file=stdout, flush=True)
 
 
+def _format_transcription_progress(payload: dict[str, object]) -> str | None:
+    progress = payload.get("progress")
+    if not isinstance(progress, dict):
+        return None
+    if progress.get("stage") != "transcription":
+        return None
+    event = progress.get("event")
+    if not isinstance(event, str):
+        return None
+    parts = [f"event={event}"]
+    chunk_index = progress.get("chunk_index")
+    chunk_count = progress.get("chunk_count")
+    if isinstance(chunk_index, int) and isinstance(chunk_count, int) and chunk_count > 0:
+        parts.insert(0, f"chunk {chunk_index + 1}/{chunk_count}")
+    attempt = progress.get("attempt")
+    max_attempts = progress.get("max_attempts")
+    if isinstance(attempt, int) and isinstance(max_attempts, int) and max_attempts > 0:
+        insert_at = 1 if parts and parts[0].startswith("chunk ") else 0
+        parts.insert(insert_at, f"attempt {attempt}/{max_attempts}")
+    return f"Transcription: {', '.join(parts)}"
+
+
 def _print_verbose(stdout: TextIO, payload: dict[str, object], verbose: bool) -> None:
     if verbose:
         print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False), file=stdout)
@@ -290,6 +312,10 @@ def run_analysis(
                 now,
                 f"{status}: {message} (elapsed {format_elapsed(elapsed)}){suffix}",
             )
+            if status == "TRANSCRIBING":
+                progress_line = _format_transcription_progress(polled)
+                if progress_line is not None:
+                    print(progress_line, file=stdout, flush=True)
             previous_status = status
             if status == SUCCESS_STATUS:
                 _print_success(polled, stdout)

@@ -151,6 +151,7 @@ async def get_analysis_job(
         candidates=job.candidates,
         render_batches=job.render_batches,
         error=job.error,
+        progress=job.progress,
         artifacts=_job_artifacts(job),
         created_at=job.created_at,
         updated_at=job.updated_at,

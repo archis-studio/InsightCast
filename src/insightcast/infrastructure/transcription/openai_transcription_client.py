@@ -116,6 +116,7 @@ class OpenAITranscriptionClient:
         model: str = "whisper-1",
         max_upload_mb: int = 24,
         max_attempts: int = 3,
+        request_timeout_seconds: float = 240,
         retry_sleep_seconds: float = 0,
         checkpoint_root: Path | None = None,
         chunker: Chunker = split_audio_for_upload,
@@ -124,6 +125,7 @@ class OpenAITranscriptionClient:
         self.model = model
         self.max_upload_mb = max_upload_mb
         self.max_attempts = max(1, max_attempts)
+        self.request_timeout_seconds = request_timeout_seconds
         self.retry_sleep_seconds = max(0, retry_sleep_seconds)
         self.checkpoint_root = checkpoint_root
         self.chunker = chunker
@@ -161,6 +163,7 @@ class OpenAITranscriptionClient:
                     self._load_or_transcribe_chunk,
                     chunk,
                     chunk_index,
+                    len(chunks),
                     checkpoint_dir / f"chunk-{chunk_index:04d}.json",
                 )
                 for chunk_index, chunk in enumerate(chunks)
@@ -232,6 +235,7 @@ class OpenAITranscriptionClient:
         self,
         chunk: AudioChunk,
         chunk_index: int,
+        chunk_count: int,
         checkpoint_path: Path,
     ) -> dict[str, Any]:
         checkpoint = self._load_chunk_checkpoint(chunk, checkpoint_path)
@@ -239,6 +243,7 @@ class OpenAITranscriptionClient:
             self._emit_progress(
                 "reused",
                 chunk_index=chunk_index,
+                chunk_count=chunk_count,
                 chunk_path=str(chunk.path),
                 chunk_bytes=chunk.path.stat().st_size,
                 offset_seconds=chunk.offset_seconds,
@@ -258,6 +263,7 @@ class OpenAITranscriptionClient:
                 self._emit_progress(
                     "started",
                     chunk_index=chunk_index,
+                    chunk_count=chunk_count,
                     chunk_path=str(chunk.path),
                     chunk_bytes=chunk.path.stat().st_size,
                     offset_seconds=chunk.offset_seconds,
@@ -271,6 +277,7 @@ class OpenAITranscriptionClient:
                 self._emit_progress(
                     "completed",
                     chunk_index=chunk_index,
+                    chunk_count=chunk_count,
                     chunk_path=str(chunk.path),
                     chunk_bytes=chunk.path.stat().st_size,
                     offset_seconds=chunk.offset_seconds,
@@ -295,6 +302,7 @@ class OpenAITranscriptionClient:
                 self._emit_progress(
                     "failed",
                     chunk_index=chunk_index,
+                    chunk_count=chunk_count,
                     chunk_path=str(chunk.path),
                     chunk_bytes=chunk.path.stat().st_size,
                     offset_seconds=chunk.offset_seconds,
@@ -396,4 +404,5 @@ class OpenAITranscriptionClient:
                 language="en",
                 response_format="verbose_json",
                 timestamp_granularities=["segment"],
+                timeout=self.request_timeout_seconds,
             )

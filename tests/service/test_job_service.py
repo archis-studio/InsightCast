@@ -1379,3 +1379,8 @@ async def test_transcription_progress_is_emitted_to_task_log(
         "event='completed_all'" in message and "processed_chunks=2" in message
         for message in messages
     )
+    assert job.progress is not None
+    assert job.progress["stage"] == "transcription"
+    assert job.progress["event"] == "completed_all"
+    assert job.progress["chunk_count"] == 2
+    assert job.progress["processed_chunks"] == 2

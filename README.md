@@ -149,6 +149,7 @@ uv run cast_render ANALYSIS_JOB_ID B --wait --force-render
 | `LLM_MODEL` | `gpt-5.4-mini` | 分析、翻譯、metadata 預設文字模型。 |
 | `TRANSCRIPTION_PROVIDER` | `openai` | `openai` 或 `local`。 |
 | `OPENAI_TRANSCRIPTION_MODEL` | `whisper-1` | OpenAI transcription model。 |
+| `OPENAI_TRANSCRIPTION_TIMEOUT_SECONDS` | `240` | 單個 OpenAI transcription chunk 的 timeout；逾時會依重試設定重跑該 chunk。 |
 | `VIDEO_MAX_HEIGHT` | `1080` | 下載影片高度上限。 |
 | `VIDEO_CRF` | `18` | Render 品質。數字越低通常畫質越好、檔案越大。 |
 | `VIDEO_X264_PRESET` | `veryfast` | x264 編碼速度設定；可改 `medium`/`slow` 換取較小檔案，畫質主要仍由 `VIDEO_CRF` 控制。 |
