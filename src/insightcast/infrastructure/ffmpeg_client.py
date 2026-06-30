@@ -19,10 +19,12 @@ class FfmpegClient:
         *,
         ffmpeg_bin: str = "ffmpeg",
         crf: int = 18,
+        preset: str = "veryfast",
         runner: ProcessRunner = _run_process,
     ) -> None:
         self.ffmpeg_bin = ffmpeg_bin
         self.crf = crf
+        self.preset = preset
         self.runner = runner
 
     async def probe(self) -> None:
@@ -79,6 +81,8 @@ class FfmpegClient:
                 str(source),
                 "-c:v",
                 "libx264",
+                "-preset",
+                self.preset,
                 "-crf",
                 str(self.crf),
                 "-c:a",
@@ -110,6 +114,8 @@ class FfmpegClient:
                 f"ass={subtitles}",
                 "-c:v",
                 "libx264",
+                "-preset",
+                self.preset,
                 "-crf",
                 str(self.crf),
                 "-c:a",
@@ -156,4 +162,3 @@ class FfmpegClient:
                 stage=stage,
             )
         return result
-

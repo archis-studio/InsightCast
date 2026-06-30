@@ -151,6 +151,7 @@ uv run cast_render ANALYSIS_JOB_ID B --wait --force-render
 | `OPENAI_TRANSCRIPTION_MODEL` | `whisper-1` | OpenAI transcription model。 |
 | `VIDEO_MAX_HEIGHT` | `1080` | 下載影片高度上限。 |
 | `VIDEO_CRF` | `18` | Render 品質。數字越低通常畫質越好、檔案越大。 |
+| `VIDEO_X264_PRESET` | `veryfast` | x264 編碼速度設定；可改 `medium`/`slow` 換取較小檔案，畫質主要仍由 `VIDEO_CRF` 控制。 |
 
 完整設定請看 [.env.example](.env.example)。
 

@@ -41,6 +41,18 @@ class Settings(BaseSettings):
     ytdlp_js_runtime: str | None = "node"
     video_max_height: int = Field(default=1080, ge=1, le=4320)
     video_crf: int = Field(default=18, ge=0, le=51)
+    video_x264_preset: Literal[
+        "ultrafast",
+        "superfast",
+        "veryfast",
+        "faster",
+        "fast",
+        "medium",
+        "slow",
+        "slower",
+        "veryslow",
+        "placebo",
+    ] = "veryfast"
     subtitle_chinese_font_size: int = Field(default=72, ge=1, le=300)
     subtitle_english_font_size: int = Field(default=60, ge=1, le=300)
     openai_timeout_seconds: float = Field(default=120, gt=0)
@@ -71,6 +83,7 @@ class Settings(BaseSettings):
         "whisper_model_size",
         "whisper_device",
         "ffmpeg_bin",
+        "video_x264_preset",
     )
     @classmethod
     def reject_empty_string(cls, value: str) -> str:

@@ -216,11 +216,11 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
     payload = json.loads(prompt)
     system = metadata.SYSTEM_PROMPT.lower()
 
-    assert metadata.PROMPT_VERSION == "metadata-v8"
+    assert metadata.PROMPT_VERSION == "metadata-v9"
     assert "traditional chinese" in system
     assert "youtube metadata" in system
-    assert "translated highlight" in system
-    assert "original video" in system
+    assert "knowledge highlight" in system
+    assert "fixed insightcast disclosure" in system
     assert "insightcast" in system
     assert "brand voice" in system
     assert "viewer outcome" in system
@@ -293,8 +293,8 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
         "why_this_clip_matters_now",
         "what_the_viewer_will_understand_after_watching",
         "key_reasoning_or_examples_from_the_segment",
-        "traditional_chinese_translated_highlight_disclosure",
-        "original_video_attribution_for_full_context",
+        "no_insightcast_branding_in_description_body",
+        "fixed_insightcast_disclaimer_is_appended_after_generation",
     ]
     assert payload["title_quality_bar"] == [
         "specific_enough_to_stand_without_the_original_title",
@@ -318,7 +318,7 @@ def test_metadata_prompt_preserves_source_title_equity_for_highlight_metadata() 
     payload = json.loads(prompt)
     system = metadata.SYSTEM_PROMPT.lower()
 
-    assert metadata.PROMPT_VERSION == "metadata-v8"
+    assert metadata.PROMPT_VERSION == "metadata-v9"
     assert "source title" in system
     assert "highlight" in system
     assert "traditional chinese title" in system
@@ -347,8 +347,8 @@ def test_metadata_prompt_preserves_source_title_equity_for_highlight_metadata() 
         "學程式別急著用 AI：先搞懂這個理解錯覺",
     ]
     assert payload["description_structure"] == [
-        "one_sentence_hook",
-        "2_to_3_short_paragraphs_or_compact_bullets",
-        "clear_original_source_attribution",
-        "traditional_chinese_highlight_disclosure",
+        "single_compact_paragraph",
+        "no_newline_characters",
+        "no_bullets",
+        "no_manual_insightcast_disclosure",
     ]

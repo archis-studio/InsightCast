@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -5,6 +6,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from insightcast.infrastructure.ytdlp_client import YouTubeMetadata
 from insightcast.prompts import metadata
+
+INSIGHTCAST_DESCRIPTION_DISCLAIMER = (
+    "InsightCast 為繁體中文翻譯精選，非完整原片；完整脈絡請參考原始影片。"
+)
 
 
 class PublishModel(BaseModel):
@@ -58,6 +63,11 @@ class PublishEngine:
             response_model=GeneratedYouTubeMetadata,
             trace_name="generate_metadata",
         )
+        generated = generated.model_copy(
+            update={
+                "description": _normalize_description(generated.description),
+            }
+        )
         self.writer.write_json(
             destination,
             {
@@ -70,3 +80,15 @@ class PublishEngine:
             },
         )
         return generated
+
+
+def _normalize_description(description: str) -> str:
+    without_brand_mentions = re.sub(
+        r"[^。！？.!?]*InsightCast[^。！？.!?]*[。！？.!?]?",
+        "",
+        description,
+    )
+    compacted = " ".join(without_brand_mentions.split()).strip()
+    if not compacted:
+        return INSIGHTCAST_DESCRIPTION_DISCLAIMER
+    return f"{compacted} {INSIGHTCAST_DESCRIPTION_DISCLAIMER}"

@@ -1,6 +1,6 @@
 from insightcast.prompts.serialization import compact_json
 
-PROMPT_VERSION = "metadata-v8"
+PROMPT_VERSION = "metadata-v9"
 SYSTEM_PROMPT = """Create evidence-grounded Traditional Chinese YouTube metadata for an
 InsightCast translated knowledge highlight from a foreign-language source video.
 
@@ -39,9 +39,10 @@ claims that everyone is shocked or that the topic changes everything.
 The description should read like publishable channel copy, not a raw summary. Open with a
 hook for the target viewer, explain why the clip matters now, then summarize what the
 viewer will understand after watching with enough reasoning or examples to feel concrete.
-Disclose that this is a Traditional Chinese translated highlight and direct viewers to the
-original video for the full context. Return title, description, accurate tags, and a
-privacy status that defaults to private.
+Write the description as one compact paragraph without newline characters. Do not mention
+InsightCast in the description body; the system appends the fixed InsightCast disclosure
+after generation. Return title, description, accurate tags, and a privacy status that
+defaults to private.
 
 Return exactly four title variants and one primary title. The primary title must be one
 of the variant titles. The four variant strategies are conceptual_reframe, pain_point,
@@ -183,14 +184,14 @@ def build_user_prompt(
                 "why_this_clip_matters_now",
                 "what_the_viewer_will_understand_after_watching",
                 "key_reasoning_or_examples_from_the_segment",
-                "traditional_chinese_translated_highlight_disclosure",
-                "original_video_attribution_for_full_context",
+                "no_insightcast_branding_in_description_body",
+                "fixed_insightcast_disclaimer_is_appended_after_generation",
             ],
             "description_structure": [
-                "one_sentence_hook",
-                "2_to_3_short_paragraphs_or_compact_bullets",
-                "clear_original_source_attribution",
-                "traditional_chinese_highlight_disclosure",
+                "single_compact_paragraph",
+                "no_newline_characters",
+                "no_bullets",
+                "no_manual_insightcast_disclosure",
             ],
             "tag_strategy": (
                 "Use only people, organizations, subjects, and concepts supported "

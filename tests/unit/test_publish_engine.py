@@ -12,7 +12,8 @@ from insightcast.storage.file_job_writer import FileJobWriter
 
 
 class FakeStructuredClient:
-    def __init__(self) -> None:
+    def __init__(self, description: str = "完整說明") -> None:
+        self.description = description
         self.calls: list[dict[str, object]] = []
 
     async def parse(self, **kwargs: object) -> GeneratedYouTubeMetadata:
@@ -41,7 +42,7 @@ class FakeStructuredClient:
                     "rationale": "乾淨保留懸念。",
                 },
             ],
-            description="完整說明",
+            description=self.description,
             tags=["知識", "AI"],
         )
 
@@ -84,10 +85,54 @@ async def test_publish_engine_generates_private_metadata_and_writes_traceable_js
     assert payload["generated"]["privacy_status"] == "private"
     assert payload["source"]["video_id"] == "abc123DEF_-"
     assert payload["trace"]["model"] == "gpt-metadata"
-    assert payload["trace"]["prompt_version"] == "metadata-v8"
+    assert payload["trace"]["prompt_version"] == "metadata-v9"
     call_prompt = json.loads(str(client.calls[0]["user_prompt"]))
     assert call_prompt["candidate_suggested_title"] == "Candidate title"
     assert call_prompt["source_description_excerpt"] == "Source description"
     assert call_prompt["summary"] == "Candidate summary"
     assert call_prompt["transcript_excerpt"] == "Transcript excerpt"
     assert call_prompt["brand_positioning"]["product"] == "InsightCast"
+
+
+@pytest.mark.asyncio
+async def test_publish_engine_normalizes_description_to_single_line_fixed_disclaimer(
+    tmp_path: Path,
+) -> None:
+    client = FakeStructuredClient(
+        description=(
+            "這段內容先說明觀眾為什麼會被這個問題卡住。\n\n"
+            "這支 InsightCast 精選會帶你理解底層機制。\n"
+            "看完後會知道該如何重新判斷。"
+        )
+    )
+    engine = PublishEngine(
+        client=client,
+        model="gpt-metadata",
+        writer=FileJobWriter(),
+    )
+    source = YouTubeMetadata(
+        video_id="abc123DEF_-",
+        title="Source title",
+        description="Source description",
+        duration_seconds=1200,
+        webpage_url="https://www.youtube.com/watch?v=abc123DEF_-",
+    )
+    destination = tmp_path / "video.youtube-metadata.json"
+
+    generated = await engine.generate(
+        source_metadata=source,
+        candidate_suggested_title="Candidate title",
+        summary="Candidate summary",
+        transcript_excerpt="Transcript excerpt",
+        destination=destination,
+    )
+
+    payload = json.loads(destination.read_text(encoding="utf-8"))
+    expected_disclaimer = (
+        "InsightCast 為繁體中文翻譯精選，非完整原片；完整脈絡請參考原始影片。"
+    )
+    assert "\n" not in generated.description
+    assert generated.description.endswith(expected_disclaimer)
+    assert generated.description.count("InsightCast") == 1
+    assert "這支 InsightCast 精選" not in generated.description
+    assert payload["generated"]["description"] == generated.description

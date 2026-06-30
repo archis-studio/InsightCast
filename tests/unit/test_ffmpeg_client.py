@@ -53,7 +53,7 @@ async def test_cut_clip_reencodes_precise_h264_aac_output(tmp_path: Path) -> Non
     runner = RecordingRunner()
     destination = tmp_path / "clip.mp4"
 
-    await FfmpegClient(crf=20, runner=runner).cut_clip(
+    await FfmpegClient(crf=20, preset="veryfast", runner=runner).cut_clip(
         tmp_path / "source.mp4",
         destination,
         start_seconds=12.5,
@@ -62,14 +62,23 @@ async def test_cut_clip_reencodes_precise_h264_aac_output(tmp_path: Path) -> Non
 
     command = runner.calls[0]
     assert command[2:6] == ["-ss", "12.500", "-to", "25.000"]
-    assert command[-7:-1] == ["-c:v", "libx264", "-crf", "20", "-c:a", "aac"]
+    assert command[-9:-1] == [
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-c:a",
+        "aac",
+    ]
     assert command[-1] == str(destination.resolve())
 
 
 @pytest.mark.asyncio
 async def test_burn_subtitles_uses_ass_filter_h264_and_aac(tmp_path: Path) -> None:
     runner = RecordingRunner()
-    client = FfmpegClient(crf=18, runner=runner)
+    client = FfmpegClient(crf=18, preset="veryfast", runner=runner)
     ass_path = tmp_path / "captions.ass"
 
     await client.burn_subtitles(
@@ -82,7 +91,16 @@ async def test_burn_subtitles_uses_ass_filter_h264_and_aac(tmp_path: Path) -> No
     assert "-vf" in command
     assert command[command.index("-vf") + 1].startswith("ass=")
     assert str(ass_path.resolve()) in command[command.index("-vf") + 1]
-    assert command[-7:-1] == ["-c:v", "libx264", "-crf", "18", "-c:a", "aac"]
+    assert command[-9:-1] == [
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "18",
+        "-c:a",
+        "aac",
+    ]
 
 
 @pytest.mark.asyncio
@@ -109,4 +127,3 @@ async def test_render_failure_preserves_subprocess_details() -> None:
     assert exc_info.value.error_code == ErrorCode.VIDEO_RENDER_FAILED
     assert exc_info.value.details["returncode"] == 1
     assert "codec error" in exc_info.value.details["stderr"]
-

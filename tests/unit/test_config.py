@@ -122,6 +122,8 @@ def test_ytdlp_js_runtime_can_be_disabled() -> None:
         ("api_port", 65536),
         ("video_crf", -1),
         ("video_crf", 52),
+        ("video_x264_preset", ""),
+        ("video_x264_preset", "fastest"),
         ("video_max_height", 0),
         ("llm_model", ""),
         ("default_candidate_count", 0),

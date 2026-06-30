@@ -48,7 +48,11 @@ def _server_log_config() -> dict[str, Any]:
 
 
 def _build_runtime(settings: Settings) -> tuple[JobService, FfmpegClient]:
-    ffmpeg = FfmpegClient(ffmpeg_bin=settings.ffmpeg_bin, crf=settings.video_crf)
+    ffmpeg = FfmpegClient(
+        ffmpeg_bin=settings.ffmpeg_bin,
+        crf=settings.video_crf,
+        preset=settings.video_x264_preset,
+    )
     ytdlp = YtDlpClient(
         executable=str(Path(sys.executable).with_name("yt-dlp")),
         max_height=settings.video_max_height,
