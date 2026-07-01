@@ -23,13 +23,8 @@ class FakeStructuredClient:
             title_variants=[
                 {
                     "title": "知識標題",
-                    "strategy": "conceptual_reframe",
-                    "rationale": "顛覆原本看法。",
-                },
-                {
-                    "title": "痛點標題",
-                    "strategy": "pain_point",
-                    "rationale": "直指觀眾痛點。",
+                    "strategy": "macro_reframe",
+                    "rationale": "拉出宏觀脈絡。",
                 },
                 {
                     "title": "機制標題",
@@ -37,9 +32,9 @@ class FakeStructuredClient:
                     "rationale": "說明底層機制。",
                 },
                 {
-                    "title": "簡短標題",
-                    "strategy": "clean_hook",
-                    "rationale": "乾淨保留懸念。",
+                    "title": "受眾收穫標題",
+                    "strategy": "audience_payoff",
+                    "rationale": "說明觀眾能獲得什麼。",
                 },
             ],
             description=self.description,
@@ -79,13 +74,13 @@ async def test_publish_engine_generates_private_metadata_and_writes_traceable_js
     assert payload["generated"]["title"] == "知識標題"
     assert payload["generated"]["title_variants"][0] == {
         "title": "知識標題",
-        "strategy": "conceptual_reframe",
-        "rationale": "顛覆原本看法。",
+        "strategy": "macro_reframe",
+        "rationale": "拉出宏觀脈絡。",
     }
     assert payload["generated"]["privacy_status"] == "private"
     assert payload["source"]["video_id"] == "abc123DEF_-"
     assert payload["trace"]["model"] == "gpt-metadata"
-    assert payload["trace"]["prompt_version"] == "metadata-v9"
+    assert payload["trace"]["prompt_version"] == "metadata-v10"
     call_prompt = json.loads(str(client.calls[0]["user_prompt"]))
     assert call_prompt["candidate_suggested_title"] == "Candidate title"
     assert call_prompt["source_description_excerpt"] == "Source description"

@@ -9,7 +9,7 @@ from insightcast.core.exceptions import InsightCastError
 from insightcast.domain.enums import ErrorCode
 from insightcast.domain.models import Candidate, Transcript, TranscriptSegment
 from insightcast.infrastructure.openai_client import emit_llm_telemetry
-from insightcast.prompts import curator, topic_discovery
+from insightcast.prompts import curator, selection_review, topic_discovery
 from insightcast.prompts.serialization import (
     compact_json,
     serialize_transcript_segments_for_prompt,
@@ -27,6 +27,7 @@ DISCOVERY_MIN_WINDOW_SECONDS = 4 * 60
 DISCOVERY_MIN_WINDOW_COUNT = 3
 DISCOVERY_WINDOWS_PER_CANDIDATE = 1
 SELECTION_PROMPT_CHAR_BUDGET = 36_000
+SELECTION_REVIEW_BOUNDARY_SECONDS = 120
 FRAMEWORK_SIGNAL_TERMS = (
     "because",
     "therefore",
@@ -74,11 +75,31 @@ class CuratorCandidateOutput(CuratorModel):
     suggested_title: str
     selection_reason: str
     summary: str
+    core_claim: str
+    payoff: str
+    argument_arc: list[str]
+    boundary_start_reason: str
+    boundary_end_reason: str
+    boundary_ending_type: str
     score: float | None = None
 
 
 class CuratorResponse(CuratorModel):
     candidates: list[CuratorCandidateOutput]
+
+
+class SelectionReviewCandidateOutput(CuratorModel):
+    candidate_id: str
+    rank: int
+    adjusted_start_seconds: float
+    adjusted_end_seconds: float
+    selection_reason: str
+    boundary_adjustment_reason: str
+    risk_notes: str
+
+
+class SelectionReviewResponse(CuratorModel):
+    candidates: list[SelectionReviewCandidateOutput]
 
 
 class TopicDiscoveryOutput(CuratorModel):
@@ -116,9 +137,16 @@ class CurationResult(CuratorModel):
 
 
 class CuratorEngine:
-    def __init__(self, *, client: Any, model: str) -> None:
+    def __init__(
+        self,
+        *,
+        client: Any,
+        model: str,
+        enable_selection_review: bool = False,
+    ) -> None:
         self.client = client
         self.model = model
+        self.enable_selection_review = enable_selection_review
 
     async def discover_topics(
         self,
@@ -439,15 +467,35 @@ class CuratorEngine:
                 final_max_duration_seconds=final_max_duration_seconds,
             )
             errors = normalization_errors + errors
-            if not errors:
+            has_acceptable_partial_result = (
+                normalized_candidates
+                and _only_candidate_count_shortage(errors)
+            )
+            if not errors or has_acceptable_partial_result:
+                if self.enable_selection_review:
+                    normalized_candidates = await self._review_candidates(
+                        normalized_candidates,
+                        transcript=transcript,
+                        target_min_duration_seconds=target_min_duration_seconds,
+                        target_max_duration_seconds=target_max_duration_seconds,
+                        accepted_min_duration_seconds=accepted_min_duration_seconds,
+                        accepted_max_duration_seconds=accepted_max_duration_seconds,
+                        final_min_duration_seconds=final_min_duration_seconds,
+                        final_max_duration_seconds=final_max_duration_seconds,
+                    )
                 return CurationResult(
                     candidates=[
-                        Candidate(**candidate.model_dump())
+                        _to_domain_candidate(candidate)
                         for candidate in normalized_candidates
                     ],
                     model=self.model,
                     prompt_version=(
                         f"{topic_discovery.PROMPT_VERSION}+{curator.PROMPT_VERSION}"
+                        + (
+                            f"+{selection_review.PROMPT_VERSION}"
+                            if self.enable_selection_review
+                            else ""
+                        )
                     ),
                 )
             feedback = "; ".join(errors)
@@ -472,6 +520,103 @@ class CuratorEngine:
             details={"validation_feedback": feedback},
             stage="curating",
         )
+
+    async def _review_candidates(
+        self,
+        candidates: list[CuratorCandidateOutput],
+        *,
+        transcript: Transcript,
+        target_min_duration_seconds: float,
+        target_max_duration_seconds: float,
+        accepted_min_duration_seconds: float,
+        accepted_max_duration_seconds: float,
+        final_min_duration_seconds: float,
+        final_max_duration_seconds: float,
+    ) -> list[CuratorCandidateOutput]:
+        review_segments = _build_selection_review_transcript(
+            segments=transcript.segments,
+            candidates=candidates,
+        )
+        serialized_transcript = serialize_transcript_segments_for_prompt(review_segments)
+        emit_llm_telemetry(
+            {
+                "event": "window_plan",
+                "trace_name": "selection_review",
+                "transcript_scope": "candidate_local_context",
+                "transcript_is_complete": False,
+                "original_segments": len(transcript.segments),
+                "provided_segments": len(review_segments),
+                "window_count": len(
+                    _candidate_context_windows(
+                        candidates,
+                        transcript_start=(
+                            transcript.segments[0].start_seconds
+                            if transcript.segments
+                            else 0
+                        ),
+                        transcript_end=(
+                            transcript.segments[-1].end_seconds
+                            if transcript.segments
+                            else 0
+                        ),
+                    )
+                ),
+                "estimated_transcript_chars": _serialized_transcript_chars(
+                    transcript.segments
+                ),
+                "provided_transcript_chars": _serialized_transcript_chars(
+                    review_segments
+                ),
+            }
+        )
+        response = await self.client.parse(
+            model=self.model,
+            system_prompt=selection_review.SYSTEM_PROMPT,
+            user_prompt=selection_review.build_user_prompt(
+                transcript=serialized_transcript,
+                candidates=[
+                    candidate.model_dump(mode="json") for candidate in candidates
+                ],
+                target_min_duration_seconds=target_min_duration_seconds,
+                target_max_duration_seconds=target_max_duration_seconds,
+                final_min_duration_seconds=final_min_duration_seconds,
+                final_max_duration_seconds=final_max_duration_seconds,
+                source_duration_seconds=transcript.duration_seconds,
+            ),
+            response_model=SelectionReviewResponse,
+            trace_name="selection_review",
+        )
+        reviewed, review_errors = _apply_selection_review(
+            candidates,
+            response.candidates,
+            transcript=transcript,
+            target_min_duration_seconds=target_min_duration_seconds,
+            target_max_duration_seconds=target_max_duration_seconds,
+            accepted_min_duration_seconds=accepted_min_duration_seconds,
+            accepted_max_duration_seconds=accepted_max_duration_seconds,
+            final_min_duration_seconds=final_min_duration_seconds,
+            final_max_duration_seconds=final_max_duration_seconds,
+        )
+        validation_errors = self._validate_candidates(
+            reviewed,
+            transcript_duration=transcript.duration_seconds,
+            candidate_count=len(candidates),
+            target_min_duration_seconds=target_min_duration_seconds,
+            target_max_duration_seconds=target_max_duration_seconds,
+            accepted_min_duration_seconds=accepted_min_duration_seconds,
+            accepted_max_duration_seconds=accepted_max_duration_seconds,
+            final_min_duration_seconds=final_min_duration_seconds,
+            final_max_duration_seconds=final_max_duration_seconds,
+        )
+        errors = review_errors + validation_errors
+        if errors:
+            raise InsightCastError(
+                ErrorCode.INVALID_LLM_OUTPUT,
+                "The selection reviewer returned invalid candidate data.",
+                details={"validation_feedback": "; ".join(errors)},
+                stage="selection_review",
+            )
+        return reviewed
 
     @staticmethod
     def _normalize_candidates(
@@ -674,6 +819,52 @@ def _build_topic_time_windows(
             windows.append((start, end))
 
     return _merge_time_windows(windows)
+
+
+def _build_selection_review_transcript(
+    *,
+    segments: Sequence[TranscriptSegment],
+    candidates: Sequence[CuratorCandidateOutput],
+) -> list[TranscriptSegment]:
+    if not segments or not candidates:
+        return []
+    windows = _candidate_context_windows(
+        candidates,
+        transcript_start=segments[0].start_seconds,
+        transcript_end=segments[-1].end_seconds,
+    )
+    return _segments_in_windows(segments, windows)
+
+
+def _candidate_context_windows(
+    candidates: Sequence[CuratorCandidateOutput],
+    *,
+    transcript_start: float,
+    transcript_end: float,
+) -> list[tuple[float, float]]:
+    windows: list[tuple[float, float]] = []
+    for candidate in candidates:
+        if candidate.end_seconds <= candidate.start_seconds:
+            continue
+        windows.extend(
+            [
+                (
+                    max(transcript_start, candidate.start_seconds),
+                    min(
+                        transcript_end,
+                        candidate.start_seconds + SELECTION_REVIEW_BOUNDARY_SECONDS,
+                    ),
+                ),
+                (
+                    max(
+                        transcript_start,
+                        candidate.end_seconds - SELECTION_REVIEW_BOUNDARY_SECONDS,
+                    ),
+                    min(transcript_end, candidate.end_seconds),
+                ),
+            ]
+        )
+    return _merge_time_windows([(start, end) for start, end in windows if end > start])
 
 
 def _select_budgeted_topic_windows(
@@ -1061,6 +1252,130 @@ def _normalize_candidate(
         return None
     _, _, _, start_index, end_index = min(options)
     return _with_segment_bounds(candidate, segments, start_index, end_index)
+
+
+def _apply_selection_review(
+    candidates: list[CuratorCandidateOutput],
+    review_candidates: list[SelectionReviewCandidateOutput],
+    *,
+    transcript: Transcript,
+    target_min_duration_seconds: float,
+    target_max_duration_seconds: float,
+    accepted_min_duration_seconds: float,
+    accepted_max_duration_seconds: float,
+    final_min_duration_seconds: float,
+    final_max_duration_seconds: float,
+) -> tuple[list[CuratorCandidateOutput], list[str]]:
+    errors: list[str] = []
+    by_id = {candidate.candidate_id: candidate for candidate in candidates}
+    expected_ids = set(by_id)
+    seen_ids: set[str] = set()
+    seen_ranks: set[int] = set()
+    reviewed: list[CuratorCandidateOutput] = []
+
+    if len(review_candidates) != len(candidates):
+        errors.append(
+            f"selection review candidate count must be {len(candidates)}, "
+            f"received {len(review_candidates)}"
+        )
+
+    for review in review_candidates:
+        if review.candidate_id not in expected_ids:
+            errors.append(
+                f"selection review returned unknown candidate {review.candidate_id}"
+            )
+            continue
+        if review.candidate_id in seen_ids:
+            errors.append(
+                f"selection review returned duplicate candidate {review.candidate_id}"
+            )
+            continue
+        if not 1 <= review.rank <= len(candidates):
+            errors.append(
+                f"selection review candidate {review.candidate_id} rank "
+                f"{review.rank} is outside 1-{len(candidates)}"
+            )
+        if review.rank in seen_ranks:
+            errors.append(f"selection review returned duplicate rank {review.rank}")
+        seen_ids.add(review.candidate_id)
+        seen_ranks.add(review.rank)
+
+        original = by_id[review.candidate_id]
+        adjusted = original.model_copy(
+            update={
+                "start_seconds": review.adjusted_start_seconds,
+                "end_seconds": review.adjusted_end_seconds,
+                "selection_reason": _reviewed_selection_reason(original, review),
+                "score": _review_rank_score(review.rank),
+            }
+        )
+        normalized = _normalize_candidate(
+            adjusted,
+            segments=transcript.segments,
+            target_min_duration_seconds=target_min_duration_seconds,
+            target_max_duration_seconds=target_max_duration_seconds,
+            accepted_min_duration_seconds=accepted_min_duration_seconds,
+            accepted_max_duration_seconds=accepted_max_duration_seconds,
+            final_min_duration_seconds=final_min_duration_seconds,
+            final_max_duration_seconds=final_max_duration_seconds,
+        )
+        if normalized is None:
+            errors.append(
+                f"selection review candidate {review.candidate_id} could not be "
+                "normalized to a valid segment-aligned range"
+            )
+            normalized = adjusted
+        reviewed.append(normalized)
+
+    missing = expected_ids - seen_ids
+    if missing:
+        errors.append(
+            "selection review omitted candidates: " + ", ".join(sorted(missing))
+        )
+
+    reviewed_by_id = {candidate.candidate_id: candidate for candidate in reviewed}
+    ordered = [
+        reviewed_by_id[candidate.candidate_id]
+        for candidate in candidates
+        if candidate.candidate_id in reviewed_by_id
+    ]
+    return ordered, errors
+
+
+def _review_rank_score(rank: int) -> float:
+    return max(0.1, round(1.0 - ((rank - 1) * 0.2), 2))
+
+
+def _reviewed_selection_reason(
+    original: CuratorCandidateOutput,
+    review: SelectionReviewCandidateOutput,
+) -> str:
+    return (
+        f"Selection review rank #{review.rank}: {review.selection_reason} "
+        f"Boundary review: {review.boundary_adjustment_reason} "
+        f"Risk notes: {review.risk_notes} "
+        f"Original candidate reason: {original.selection_reason}"
+    )
+
+
+def _to_domain_candidate(candidate: CuratorCandidateOutput) -> Candidate:
+    payload = candidate.model_dump(exclude={
+        "boundary_start_reason",
+        "boundary_end_reason",
+        "boundary_ending_type",
+    })
+    payload["boundary_notes"] = {
+        "start_reason": candidate.boundary_start_reason,
+        "end_reason": candidate.boundary_end_reason,
+        "ending_type": candidate.boundary_ending_type,
+    }
+    return Candidate(**payload)
+
+
+def _only_candidate_count_shortage(errors: Sequence[str]) -> bool:
+    return bool(errors) and all(
+        error.startswith("candidate count must be ") for error in errors
+    )
 
 
 def _window_duration(

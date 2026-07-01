@@ -142,6 +142,23 @@ def build_user_prompt(
             "minimal_overlap_with_other_candidates",
             "defensible_title_and_summary",
         ],
+        "structured_candidate_package": {
+            "purpose": (
+                "Compress each candidate into fields that a later reviewer can compare "
+                "without rereading the full candidate transcript."
+            ),
+            "core_claim": "One sentence naming the candidate's central claim.",
+            "payoff": "What the viewer understands or can decide after watching.",
+            "argument_arc": [
+                "necessary setup",
+                "central claim",
+                "key evidence or reasoning",
+                "conclusion or transition",
+            ],
+            "boundary_start_reason": "Why this is the natural useful start.",
+            "boundary_end_reason": "Why this is the natural useful end.",
+            "boundary_ending_type": "conclusion | transition | unresolved | cutoff_risk",
+        },
         "selection_reason_requirements": [
             "state_the_core_audience_payoff",
             "explain_the_central_claim_or_framework",

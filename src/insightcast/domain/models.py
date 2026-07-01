@@ -41,6 +41,10 @@ class Candidate(DomainModel):
     suggested_title: str = Field(min_length=1)
     selection_reason: str = Field(min_length=1)
     summary: str = Field(min_length=1)
+    core_claim: str | None = None
+    payoff: str | None = None
+    argument_arc: list[str] = Field(default_factory=list)
+    boundary_notes: dict[str, str] = Field(default_factory=dict)
     score: float | None = None
 
     @model_validator(mode="after")

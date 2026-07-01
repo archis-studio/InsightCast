@@ -1,7 +1,13 @@
 import json
 
 from insightcast.domain.models import TranscriptSegment
-from insightcast.prompts import curator, metadata, topic_discovery, translation
+from insightcast.prompts import (
+    curator,
+    metadata,
+    selection_review,
+    topic_discovery,
+    translation,
+)
 from insightcast.prompts.serialization import (
     compact_json,
     serialize_transcript_segments_for_prompt,
@@ -10,6 +16,7 @@ from insightcast.prompts.serialization import (
 
 def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None:
     assert curator.PROMPT_VERSION
+    assert selection_review.PROMPT_VERSION
     assert translation.PROMPT_VERSION
     assert metadata.PROMPT_VERSION
     assert "continuous" in curator.SYSTEM_PROMPT.lower()
@@ -49,13 +56,34 @@ def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None
         summary="Summary",
         transcript_excerpt="Excerpt",
     )
+    selection_review_user = selection_review.build_user_prompt(
+        transcript=[{"start_seconds": 0, "end_seconds": 3, "text": "Hello"}],
+        candidates=[
+            {
+                "candidate_id": "A",
+                "start_seconds": 0,
+                "end_seconds": 480,
+                "suggested_title": "Candidate",
+                "selection_reason": "Reason",
+                "summary": "Summary",
+                "score": 0.97,
+            }
+        ],
+        target_min_duration_seconds=480,
+        target_max_duration_seconds=720,
+        final_min_duration_seconds=390,
+        final_max_duration_seconds=810,
+        source_duration_seconds=900,
+    )
 
     assert '"candidate_count":2' in curator_user
     assert "\n" not in curator_user
     assert "\n" not in translation_user
     assert "\n" not in metadata_user
+    assert "\n" not in selection_review_user
     curator_payload = json.loads(curator_user)
     assert curator.PROMPT_VERSION == "curator-v6"
+    assert selection_review.PROMPT_VERSION == "selection-review-v1"
     assert "original source timestamps" in curator.SYSTEM_PROMPT
     assert "lowest avoidable waste" in curator.SYSTEM_PROMPT
     assert curator_payload["topics"][0]["topic_id"] == "T1"
@@ -110,6 +138,18 @@ def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None
         "minimal_overlap_with_other_candidates",
         "defensible_title_and_summary",
     ]
+    assert curator_payload["structured_candidate_package"]["core_claim"]
+    assert curator_payload["structured_candidate_package"]["payoff"]
+    assert curator_payload["structured_candidate_package"]["argument_arc"] == [
+        "necessary setup",
+        "central claim",
+        "key evidence or reasoning",
+        "conclusion or transition",
+    ]
+    assert (
+        curator_payload["structured_candidate_package"]["boundary_ending_type"]
+        == "conclusion | transition | unresolved | cutoff_risk"
+    )
     assert curator_payload["selection_reason_requirements"] == [
         "state_the_core_audience_payoff",
         "explain_the_central_claim_or_framework",
@@ -121,6 +161,15 @@ def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None
         "Prefer non-overlapping candidates. Only reuse source time when the second "
         "candidate explains a materially different idea and the overlap is necessary."
     )
+    selection_review_payload = json.loads(selection_review_user)
+    assert selection_review_payload["candidates"][0]["candidate_id"] == "A"
+    assert "boundary excerpts only" in selection_review_payload["transcript_scope"]
+    assert any(
+        "Do not stop at 8 minutes" in rule
+        for rule in selection_review_payload["decision_rules"]
+    )
+    assert "ending_completeness" in selection_review_payload["review_each_candidate_for"]
+    assert "rank 1" in selection_review_payload["goal"]
     assert '"segment_id":"s1"' in translation_user
     translation_payload = json.loads(translation_user)
     assert translation.PROMPT_VERSION == "translation-v2"
@@ -216,7 +265,7 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
     payload = json.loads(prompt)
     system = metadata.SYSTEM_PROMPT.lower()
 
-    assert metadata.PROMPT_VERSION == "metadata-v9"
+    assert metadata.PROMPT_VERSION == "metadata-v10"
     assert "traditional chinese" in system
     assert "youtube metadata" in system
     assert "knowledge highlight" in system
@@ -240,7 +289,7 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
     }
     assert payload["title_strategy"] == [
         "choose_the_title_frame_that_best_fits_the_clip",
-        "prefer_topic_colon_narrative_structure_when_natural",
+        "prefer_flexible_anchor_colon_narrative_structure_when_natural",
         "do_not_add_author_host_or_guest_names_by_default",
         "use_candidate_suggested_title_as_the_segment_semantic_center",
         "use_source_title_and_description_as_context_boundaries",
@@ -249,17 +298,17 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
         "keep_one_clear_hook_without_clickbait",
         "use_one_source_anchor_for_trust_when_helpful",
     ]
-    assert payload["title_variant_requirements"]["variant_count"] == 4
+    assert payload["title_variant_requirements"]["variant_count"] == 3
     assert payload["title_variant_requirements"]["primary_title_must_match_one_variant"]
     assert payload["title_variant_requirements"]["preferred_structure"] == (
-        "<topic>：<narrative>"
+        "<anchor_or_topic_narrative>：<argument_or_payoff>"
     )
     assert [
         item["strategy"] for item in payload["title_variant_requirements"]["strategies"]
-    ] == ["conceptual_reframe", "pain_point", "mechanism", "clean_hook"]
+    ] == ["macro_reframe", "mechanism", "audience_payoff"]
     assert payload["title_variant_requirements"]["choose_primary_by"] == [
         "truthfulness_to_segment",
-        "topic_colon_narrative_readability",
+        "anchor_colon_narrative_readability",
         "viewer_payoff_clarity",
         "source_context_alignment_without_author_name",
         "traditional_chinese_youtube_readability",
@@ -275,7 +324,8 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
         "must_not_overpromise_beyond_summary_or_transcript": True,
     }
     assert payload["title_frame_options"] == [
-        "focal_point_colon_narrative",
+        "flexible_anchor_colon_narrative",
+        "macro_or_strategic_reframe",
         "risk_or_cost_warning",
         "benefit_or_capability_gain",
         "counterintuitive_claim",
@@ -284,9 +334,11 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
     ]
     assert payload["title_diversity_guidance"] == [
         "do_not_force_every_video_into_the_same_structure",
+        "the_anchor_before_the_colon_can_be_a_topic_or_short_thematic_setup",
         "vary_rhythm_between_colon_question_warning_and_direct_claim_when_supported",
         "generic_framing_like_這段影片_or_作者說_is_allowed_only_when_it_sounds_natural",
         "avoid_machine_translated_symmetry_or_formulaic_parallel_phrasing",
+        "avoid_channel_titles_feeling_like_the_same_template_repeated",
     ]
     assert payload["description_strategy"] == [
         "opening_hook_for_target_viewer",
@@ -300,6 +352,7 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
         "specific_enough_to_stand_without_the_original_title",
         "aim_for_50_to_70_readable_characters_under_youtube_100_character_limit",
         "audience_can_sense_what_to_gain_or_avoid",
+        "calm_neutral_editorial_tone_with_tension_but_without_hype",
         "fresh_and_human_not_template_repeated",
         "no_unsupported_superlatives_or_guarantees",
     ]
@@ -318,7 +371,7 @@ def test_metadata_prompt_preserves_source_title_equity_for_highlight_metadata() 
     payload = json.loads(prompt)
     system = metadata.SYSTEM_PROMPT.lower()
 
-    assert metadata.PROMPT_VERSION == "metadata-v9"
+    assert metadata.PROMPT_VERSION == "metadata-v10"
     assert "source title" in system
     assert "highlight" in system
     assert "traditional chinese title" in system
@@ -341,10 +394,11 @@ def test_metadata_prompt_preserves_source_title_equity_for_highlight_metadata() 
         "for Traditional Chinese viewers, not as a replacement for the full original video."
     )
     assert payload["title_style_examples"] == [
-        "AI 學習錯覺：你不是變強了，只是更快產出看似正確的答案",
-        "新手寫程式卡關：AI 可能正在放大你的誤解",
-        "AI 輔助學習的陷阱：能跑的程式不等於真正理解",
-        "學程式別急著用 AI：先搞懂這個理解錯覺",
+        "全球金融正在換規則：為什麼紙面合約不再代表真正的黃金市場",
+        "黃金市場：拆解紙黃金、槓桿交易與真實供需的定價權轉移",
+        "AI 代理不只是省人力：語音正在變成下一代操作介面",
+        "你以為的分散投資：S&P 500 其實可能押在少數科技巨頭上",
+        "學程式別急著用 AI：先看懂這個理解錯覺",
     ]
     assert payload["description_structure"] == [
         "single_compact_paragraph",

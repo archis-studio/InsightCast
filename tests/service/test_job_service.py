@@ -356,13 +356,8 @@ class FakePublish:
             title_variants=[
                 {
                     "title": "Title",
-                    "strategy": "conceptual_reframe",
-                    "rationale": "Conceptual reframe.",
-                },
-                {
-                    "title": "Pain title",
-                    "strategy": "pain_point",
-                    "rationale": "Pain point.",
+                    "strategy": "macro_reframe",
+                    "rationale": "Macro reframe.",
                 },
                 {
                     "title": "Mechanism title",
@@ -370,9 +365,9 @@ class FakePublish:
                     "rationale": "Mechanism.",
                 },
                 {
-                    "title": "Clean hook title",
-                    "strategy": "clean_hook",
-                    "rationale": "Clean hook.",
+                    "title": "Audience payoff title",
+                    "strategy": "audience_payoff",
+                    "rationale": "Audience payoff.",
                 },
             ],
             description="Description",

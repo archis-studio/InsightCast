@@ -99,6 +99,7 @@ def _build_runtime(settings: Settings) -> tuple[JobService, FfmpegClient]:
         curator_engine=CuratorEngine(
             client=structured,
             model=settings.effective_curator_model,
+            enable_selection_review=True,
         ),
         clip_engine=ClipEngine(
             ffmpeg=ffmpeg,

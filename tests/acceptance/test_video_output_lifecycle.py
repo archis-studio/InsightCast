@@ -239,13 +239,8 @@ class FakePublish:
             title_variants=[
                 {
                     "title": "Acceptance title",
-                    "strategy": "conceptual_reframe",
-                    "rationale": "Conceptual reframe.",
-                },
-                {
-                    "title": "Acceptance pain title",
-                    "strategy": "pain_point",
-                    "rationale": "Pain point.",
+                    "strategy": "macro_reframe",
+                    "rationale": "Macro reframe.",
                 },
                 {
                     "title": "Acceptance mechanism title",
@@ -253,9 +248,9 @@ class FakePublish:
                     "rationale": "Mechanism.",
                 },
                 {
-                    "title": "Acceptance clean hook title",
-                    "strategy": "clean_hook",
-                    "rationale": "Clean hook.",
+                    "title": "Acceptance audience payoff title",
+                    "strategy": "audience_payoff",
+                    "rationale": "Audience payoff.",
                 },
             ],
             description="Acceptance description",
