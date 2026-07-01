@@ -1668,11 +1668,17 @@ class JobService:
         resume_strategy: str | None = None,
     ) -> StageManifest:
         completed_at = self.clock()
+        elapsed_seconds = self._stage_elapsed_seconds(
+            manifest.operation_id,
+            stage,
+        )
         for record in reversed(manifest.stages):
             if record.stage == stage and record.status is StageStatus.RUNNING:
                 record.status = status
                 record.completed_at = completed_at
-                if record.started_at is not None:
+                if elapsed_seconds is not None:
+                    record.elapsed_seconds = elapsed_seconds
+                elif record.started_at is not None:
                     record.elapsed_seconds = (
                         completed_at - record.started_at
                     ).total_seconds()
@@ -1697,6 +1703,16 @@ class JobService:
                 error=error,
             ),
         )
+
+    def _stage_elapsed_seconds(
+        self,
+        job_id: str,
+        stage: PipelineStage,
+    ) -> float | None:
+        elapsed_seconds = self._operation_stage_metrics.get(job_id, {}).get(stage.value)
+        if elapsed_seconds is None:
+            return None
+        return round(elapsed_seconds, 3)
 
     def _finalize_provisional_output(
         self,

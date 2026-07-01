@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import insightcast.services.job_service as job_service_module
 from insightcast.core.exceptions import InsightCastError
 from insightcast.core.logging import get_job_log_path
 from insightcast.domain.enums import ErrorCode, JobStatus
@@ -50,6 +51,16 @@ class Clock:
     def __call__(self) -> datetime:
         current = self.value
         self.value += timedelta(seconds=1)
+        return current
+
+
+class JumpingClock:
+    def __init__(self) -> None:
+        self.value = datetime(2026, 6, 6, 14, 30, tzinfo=UTC)
+
+    def __call__(self) -> datetime:
+        current = self.value
+        self.value += timedelta(minutes=10)
         return current
 
 
@@ -951,6 +962,40 @@ async def test_candidate_render_writes_stage_manifest(tmp_path: Path) -> None:
     assert payload["stages"][0]["artifacts"]["temporary_clip"].endswith(
         "A.unburned.mp4"
     )
+
+
+@pytest.mark.asyncio
+async def test_stage_manifest_elapsed_uses_monotonic_stage_timing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = make_service(tmp_path)
+    service.clock = JumpingClock()
+    monotonic_value = 0.0
+
+    def fake_perf_counter() -> float:
+        nonlocal monotonic_value
+        monotonic_value += 10.0
+        return monotonic_value
+
+    monkeypatch.setattr(job_service_module, "perf_counter", fake_perf_counter)
+    job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+    await service.process(await service.queue.get())
+
+    batch = await service.create_render(
+        job.job_id,
+        CandidateSelectionRequest(candidate_ids="A", force_render=True),
+    )
+    await service.process(await service.queue.get())
+
+    payload = json.loads(
+        (batch.output_dir / "stage-manifest.json").read_text(encoding="utf-8")
+    )
+    burn_subtitles = next(
+        stage for stage in payload["stages"] if stage["stage"] == "burn_subtitles"
+    )
+
+    assert burn_subtitles["elapsed_seconds"] == 10.0
 
 
 @pytest.mark.asyncio
