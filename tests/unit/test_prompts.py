@@ -261,11 +261,22 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
         candidate_suggested_title="Candidate title",
         summary="A supported central finding",
         transcript_excerpt="Evidence and conclusion",
+        candidate_core_claim="The job is closer to software engineering than ML research.",
+        candidate_payoff="Viewers can decide whether AI engineering matches their skills.",
+        candidate_argument_arc=[
+            "AI roles are popular",
+            "AI engineers mostly integrate foundation models",
+            "the role pays well because product delivery is valuable",
+        ],
+        candidate_boundary_notes={
+            "start": "Opens by defining the role.",
+            "end": "Ends before the hiring-market caveats.",
+        },
     )
     payload = json.loads(prompt)
     system = metadata.SYSTEM_PROMPT.lower()
 
-    assert metadata.PROMPT_VERSION == "metadata-v10"
+    assert metadata.PROMPT_VERSION == "metadata-v15"
     assert "traditional chinese" in system
     assert "youtube metadata" in system
     assert "knowledge highlight" in system
@@ -274,88 +285,40 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
     assert "brand voice" in system
     assert "viewer outcome" in system
     assert "unsupported" in system
-    assert payload["brand_positioning"] == {
-        "product": "InsightCast",
-        "promise": (
-            "help Traditional Chinese viewers quickly decide why this foreign-language "
-            "knowledge highlight is worth their attention"
-        ),
-        "voice": [
-            "editorial",
-            "precise",
-            "premium_but_plainspoken",
-            "curious_without_hype",
-        ],
-    }
-    assert payload["title_strategy"] == [
-        "choose_the_title_frame_that_best_fits_the_clip",
-        "prefer_flexible_anchor_colon_narrative_structure_when_natural",
-        "do_not_add_author_host_or_guest_names_by_default",
-        "use_candidate_suggested_title_as_the_segment_semantic_center",
-        "use_source_title_and_description_as_context_boundaries",
-        "lead_with_a_specific_idea_risk_gain_or_tension",
-        "make_the_viewer_feel_the_practical_stakes",
-        "keep_one_clear_hook_without_clickbait",
-        "use_one_source_anchor_for_trust_when_helpful",
-    ]
-    assert payload["title_variant_requirements"]["variant_count"] == 3
-    assert payload["title_variant_requirements"]["primary_title_must_match_one_variant"]
-    assert payload["title_variant_requirements"]["preferred_structure"] == (
-        "<anchor_or_topic_narrative>：<argument_or_payoff>"
-    )
-    assert [
-        item["strategy"] for item in payload["title_variant_requirements"]["strategies"]
-    ] == ["macro_reframe", "mechanism", "audience_payoff"]
-    assert payload["title_variant_requirements"]["choose_primary_by"] == [
-        "truthfulness_to_segment",
-        "anchor_colon_narrative_readability",
-        "viewer_payoff_clarity",
-        "source_context_alignment_without_author_name",
-        "traditional_chinese_youtube_readability",
-    ]
+    assert "source_equity_hook" in system
+    assert "audience_pain_reframe" in system
+    assert "<narrative topic>：<sub narrative>" in metadata.SYSTEM_PROMPT
+    assert "vertical bar" in system
+    assert "speaker" in system
+    assert "one-shot" in system
+    assert "source_equity" in system
+    assert "pain_point" in system
+    assert "mechanism" in system
+    assert "forbidden_overreach" in system
+    assert "鬼故事" in metadata.SYSTEM_PROMPT
     assert payload["candidate_suggested_title"] == "Candidate title"
-    assert payload["source_description_excerpt"] == "Original source description"
-    assert payload["title_alignment_contract"] == {
-        "must_reflect_candidate_segment": True,
-        "must_not_drift_beyond_source_description_context": True,
-        "should_preserve_source_title_promise_or_tension_when_relevant": True,
-        "should_preserve_candidate_suggested_title_meaning": True,
-        "may_rewrite_for_traditional_chinese_youtube_packaging": True,
-        "must_not_overpromise_beyond_summary_or_transcript": True,
+    assert payload["candidate_editorial_package"] == {
+        "core_claim": "The job is closer to software engineering than ML research.",
+        "payoff": "Viewers can decide whether AI engineering matches their skills.",
+        "argument_arc": [
+            "AI roles are popular",
+            "AI engineers mostly integrate foundation models",
+            "the role pays well because product delivery is valuable",
+        ],
+        "boundary_notes": {
+            "start": "Opens by defining the role.",
+            "end": "Ends before the hiring-market caveats.",
+        },
     }
-    assert payload["title_frame_options"] == [
-        "flexible_anchor_colon_narrative",
-        "macro_or_strategic_reframe",
-        "risk_or_cost_warning",
-        "benefit_or_capability_gain",
-        "counterintuitive_claim",
-        "specific_question",
-        "source_anchor_plus_clip_value",
-    ]
-    assert payload["title_diversity_guidance"] == [
-        "do_not_force_every_video_into_the_same_structure",
-        "the_anchor_before_the_colon_can_be_a_topic_or_short_thematic_setup",
-        "vary_rhythm_between_colon_question_warning_and_direct_claim_when_supported",
-        "generic_framing_like_這段影片_or_作者說_is_allowed_only_when_it_sounds_natural",
-        "avoid_machine_translated_symmetry_or_formulaic_parallel_phrasing",
-        "avoid_channel_titles_feeling_like_the_same_template_repeated",
-    ]
-    assert payload["description_strategy"] == [
-        "opening_hook_for_target_viewer",
-        "why_this_clip_matters_now",
-        "what_the_viewer_will_understand_after_watching",
-        "key_reasoning_or_examples_from_the_segment",
-        "no_insightcast_branding_in_description_body",
-        "fixed_insightcast_disclaimer_is_appended_after_generation",
-    ]
-    assert payload["title_quality_bar"] == [
-        "specific_enough_to_stand_without_the_original_title",
-        "aim_for_50_to_70_readable_characters_under_youtube_100_character_limit",
-        "audience_can_sense_what_to_gain_or_avoid",
-        "calm_neutral_editorial_tone_with_tension_but_without_hype",
-        "fresh_and_human_not_template_repeated",
-        "no_unsupported_superlatives_or_guarantees",
-    ]
+    assert payload["source_description_excerpt"] == "Original source description"
+    assert set(payload) == {
+        "source_title",
+        "source_description_excerpt",
+        "candidate_suggested_title",
+        "candidate_editorial_package",
+        "summary",
+        "transcript_excerpt",
+    }
 
 
 def test_metadata_prompt_preserves_source_title_equity_for_highlight_metadata() -> None:
@@ -371,38 +334,25 @@ def test_metadata_prompt_preserves_source_title_equity_for_highlight_metadata() 
     payload = json.loads(prompt)
     system = metadata.SYSTEM_PROMPT.lower()
 
-    assert metadata.PROMPT_VERSION == "metadata-v10"
+    assert metadata.PROMPT_VERSION == "metadata-v15"
     assert "source title" in system
     assert "highlight" in system
     assert "traditional chinese title" in system
     assert "should lead" in system
     assert "packaging editor" in system
-    assert payload["source_title_retention_strategy"] == [
-        "preserve_one_recognizable_source_title_element_when_it_adds_trust",
-        "do_not_add_author_host_or_guest_names_by_default",
-        "do_not_force_the_full_original_title",
-        "do_not_let_source_title_overpower_the_clip_value",
-        "blend_source_anchor_with_selected_highlight_focus",
-    ]
+    assert "source equity" in system
+    assert "original-title tension" in system
+    assert "do not generate speaker" in system
     assert payload["candidate_suggested_title"] == "How vision makes a talk memorable"
     assert (
         payload["source_description_excerpt"]
         == "This source explains public speaking, contribution, and memorable endings."
     )
-    assert payload["highlight_positioning"] == (
-        "Package the selected segment as a standalone InsightCast knowledge highlight "
-        "for Traditional Chinese viewers, not as a replacement for the full original video."
-    )
-    assert payload["title_style_examples"] == [
-        "全球金融正在換規則：為什麼紙面合約不再代表真正的黃金市場",
-        "黃金市場：拆解紙黃金、槓桿交易與真實供需的定價權轉移",
-        "AI 代理不只是省人力：語音正在變成下一代操作介面",
-        "你以為的分散投資：S&P 500 其實可能押在少數科技巨頭上",
-        "學程式別急著用 AI：先看懂這個理解錯覺",
-    ]
-    assert payload["description_structure"] == [
-        "single_compact_paragraph",
-        "no_newline_characters",
-        "no_bullets",
-        "no_manual_insightcast_disclosure",
-    ]
+    assert set(payload) == {
+        "source_title",
+        "source_description_excerpt",
+        "candidate_suggested_title",
+        "candidate_editorial_package",
+        "summary",
+        "transcript_excerpt",
+    }

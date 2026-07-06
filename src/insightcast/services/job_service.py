@@ -766,6 +766,10 @@ class JobService:
                         candidate_suggested_title=candidate.suggested_title,
                         summary=candidate.summary,
                         transcript_excerpt=excerpt,
+                        candidate_core_claim=candidate.core_claim,
+                        candidate_payoff=candidate.payoff,
+                        candidate_argument_arc=candidate.argument_arc,
+                        candidate_boundary_notes=candidate.boundary_notes,
                         destination=metadata_path,
                     ),
                 )
@@ -1114,6 +1118,10 @@ class JobService:
                     candidate_suggested_title=selection.suggested_title,
                     summary=selection.summary,
                     transcript_excerpt=excerpt,
+                    candidate_core_claim=selection.core_claim,
+                    candidate_payoff=selection.payoff,
+                    candidate_argument_arc=selection.argument_arc,
+                    candidate_boundary_notes=selection.boundary_notes,
                     destination=metadata_path,
                 ),
             )

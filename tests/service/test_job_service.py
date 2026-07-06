@@ -363,22 +363,22 @@ class FakePublish:
     async def generate(self, **kwargs: object) -> GeneratedYouTubeMetadata:
         Path(kwargs["destination"]).write_text("{}", encoding="utf-8")
         return GeneratedYouTubeMetadata(
-            title="Title",
+            title="Title frame：Source hook",
             title_variants=[
                 {
-                    "title": "Title",
-                    "strategy": "macro_reframe",
-                    "rationale": "Macro reframe.",
+                    "title": "Title frame：Source hook",
+                    "strategy": "source_equity_hook",
+                    "rationale": "Source equity hook.",
                 },
                 {
-                    "title": "Mechanism title",
-                    "strategy": "mechanism",
+                    "title": "Mechanism frame：Causal point",
+                    "strategy": "mechanism_breakdown",
                     "rationale": "Mechanism.",
                 },
                 {
-                    "title": "Audience payoff title",
-                    "strategy": "audience_payoff",
-                    "rationale": "Audience payoff.",
+                    "title": "Audience frame：Pain reframe",
+                    "strategy": "audience_pain_reframe",
+                    "rationale": "Audience pain reframe.",
                 },
             ],
             description="Description",

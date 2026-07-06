@@ -1,8 +1,9 @@
 import re
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from insightcast.infrastructure.ytdlp_client import YouTubeMetadata
 from insightcast.prompts import metadata
@@ -19,9 +20,9 @@ class PublishModel(BaseModel):
 class TitleVariant(PublishModel):
     title: str = Field(min_length=1)
     strategy: Literal[
-        "macro_reframe",
-        "mechanism",
-        "audience_payoff",
+        "source_equity_hook",
+        "mechanism_breakdown",
+        "audience_pain_reframe",
     ]
     rationale: str = Field(min_length=1)
 
@@ -32,6 +33,24 @@ class GeneratedYouTubeMetadata(PublishModel):
     description: str = Field(min_length=1)
     tags: list[str]
     privacy_status: Literal["private", "unlisted", "public"] = "private"
+
+    @model_validator(mode="after")
+    def validate_title_packaging(self) -> "GeneratedYouTubeMetadata":
+        titles = [self.title, *(variant.title for variant in self.title_variants)]
+        for title in titles:
+            _validate_title_shape(title)
+        variant_titles = {variant.title for variant in self.title_variants}
+        if self.title not in variant_titles:
+            raise ValueError("primary title must match one title variant")
+        strategies = {variant.strategy for variant in self.title_variants}
+        expected = {
+            "source_equity_hook",
+            "mechanism_breakdown",
+            "audience_pain_reframe",
+        }
+        if strategies != expected:
+            raise ValueError("title variants must include each required strategy exactly once")
+        return self
 
 
 class PublishEngine:
@@ -47,6 +66,10 @@ class PublishEngine:
         candidate_suggested_title: str | None = None,
         summary: str,
         transcript_excerpt: str,
+        candidate_core_claim: str | None = None,
+        candidate_payoff: str | None = None,
+        candidate_argument_arc: Sequence[str] | None = None,
+        candidate_boundary_notes: Mapping[str, Any] | None = None,
         destination: Path,
     ) -> GeneratedYouTubeMetadata:
         generated = await self.client.parse(
@@ -58,6 +81,10 @@ class PublishEngine:
                 candidate_suggested_title=candidate_suggested_title,
                 summary=summary,
                 transcript_excerpt=transcript_excerpt,
+                candidate_core_claim=candidate_core_claim,
+                candidate_payoff=candidate_payoff,
+                candidate_argument_arc=candidate_argument_arc,
+                candidate_boundary_notes=candidate_boundary_notes,
             ),
             response_model=GeneratedYouTubeMetadata,
             trace_name="generate_metadata",
@@ -91,3 +118,12 @@ def _normalize_description(description: str) -> str:
     if not compacted:
         return INSIGHTCAST_DESCRIPTION_DISCLAIMER
     return f"{compacted} {INSIGHTCAST_DESCRIPTION_DISCLAIMER}"
+
+
+def _validate_title_shape(title: str) -> None:
+    if "｜" in title or "|" in title:
+        raise ValueError("generated title must not contain a vertical bar")
+    if title.count("：") != 1:
+        raise ValueError("generated title must contain exactly one fullwidth colon")
+    if len(title) > 100:
+        raise ValueError("generated title must be 100 characters or fewer")

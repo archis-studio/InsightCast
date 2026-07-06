@@ -235,22 +235,22 @@ class FakePublish:
     async def generate(self, **kwargs: object) -> GeneratedYouTubeMetadata:
         Path(kwargs["destination"]).write_text("{}", encoding="utf-8")
         return GeneratedYouTubeMetadata(
-            title="Acceptance title",
+            title="Acceptance frame：Source hook",
             title_variants=[
                 {
-                    "title": "Acceptance title",
-                    "strategy": "macro_reframe",
-                    "rationale": "Macro reframe.",
+                    "title": "Acceptance frame：Source hook",
+                    "strategy": "source_equity_hook",
+                    "rationale": "Source equity hook.",
                 },
                 {
-                    "title": "Acceptance mechanism title",
-                    "strategy": "mechanism",
+                    "title": "Acceptance mechanism：Causal point",
+                    "strategy": "mechanism_breakdown",
                     "rationale": "Mechanism.",
                 },
                 {
-                    "title": "Acceptance audience payoff title",
-                    "strategy": "audience_payoff",
-                    "rationale": "Audience payoff.",
+                    "title": "Acceptance audience：Pain reframe",
+                    "strategy": "audience_pain_reframe",
+                    "rationale": "Audience pain reframe.",
                 },
             ],
             description="Acceptance description",

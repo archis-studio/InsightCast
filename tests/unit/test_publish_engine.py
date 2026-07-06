@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from insightcast.engines.publish_engine import (
     GeneratedYouTubeMetadata,
@@ -19,26 +20,78 @@ class FakeStructuredClient:
     async def parse(self, **kwargs: object) -> GeneratedYouTubeMetadata:
         self.calls.append(kwargs)
         return GeneratedYouTubeMetadata(
-            title="知識標題",
+            title="知識標題：來源鉤子",
             title_variants=[
                 {
-                    "title": "知識標題",
-                    "strategy": "macro_reframe",
-                    "rationale": "拉出宏觀脈絡。",
+                    "title": "知識標題：來源鉤子",
+                    "strategy": "source_equity_hook",
+                    "rationale": "用來源中最強的點擊資產切入。",
                 },
                 {
-                    "title": "機制標題",
-                    "strategy": "mechanism",
+                    "title": "機制標題：底層原因",
+                    "strategy": "mechanism_breakdown",
                     "rationale": "說明底層機制。",
                 },
                 {
-                    "title": "受眾收穫標題",
-                    "strategy": "audience_payoff",
-                    "rationale": "說明觀眾能獲得什麼。",
+                    "title": "受眾收穫標題：重框痛點",
+                    "strategy": "audience_pain_reframe",
+                    "rationale": "重框觀眾痛點。",
                 },
             ],
             description=self.description,
             tags=["知識", "AI"],
+        )
+
+
+def test_generated_metadata_rejects_malformed_title_structure() -> None:
+    with pytest.raises(ValidationError, match="exactly one fullwidth colon"):
+        GeneratedYouTubeMetadata(
+            title="不是撐到退休就好：：工作帶來身份、目的感",
+            title_variants=[
+                {
+                    "title": "不是撐到退休就好：：工作帶來身份、目的感",
+                    "strategy": "source_equity_hook",
+                    "rationale": "Bad double colon.",
+                },
+                {
+                    "title": "機制標題：說明底層機制",
+                    "strategy": "mechanism_breakdown",
+                    "rationale": "Mechanism.",
+                },
+                {
+                    "title": "痛點標題：重框觀眾痛點",
+                    "strategy": "audience_pain_reframe",
+                    "rationale": "Pain.",
+                },
+            ],
+            description="說明",
+            tags=[],
+        )
+
+
+def test_generated_metadata_rejects_speaker_suffix_bar() -> None:
+    with pytest.raises(ValidationError, match="must not contain a vertical bar"):
+        GeneratedYouTubeMetadata(
+            title="退休規劃的認知誤區：不要把快樂全押在以後｜Morgan Housel",
+            title_variants=[
+                {
+                    "title": "退休規劃的認知誤區：不要把快樂全押在以後｜Morgan Housel",
+                    "strategy": "source_equity_hook",
+                    "rationale": "Bad speaker suffix.",
+                },
+                {
+                    "title": "工作身份的底層機制：退休後少了刺激反而更空",
+                    "strategy": "mechanism_breakdown",
+                    "rationale": "Mechanism.",
+                },
+                {
+                    "title": "提早退休前該想清楚：你失去的可能不只是工作",
+                    "strategy": "audience_pain_reframe",
+                    "rationale": "Pain.",
+                },
+            ],
+            description="說明",
+            tags=[],
         )
 
 
@@ -66,27 +119,36 @@ async def test_publish_engine_generates_private_metadata_and_writes_traceable_js
         candidate_suggested_title="Candidate title",
         summary="Candidate summary",
         transcript_excerpt="Transcript excerpt",
+        candidate_core_claim="Candidate core claim",
+        candidate_payoff="Candidate payoff",
+        candidate_argument_arc=["setup", "evidence", "payoff"],
+        candidate_boundary_notes={"start": "starts cleanly", "end": "ends cleanly"},
         destination=destination,
     )
 
     payload = json.loads(destination.read_text(encoding="utf-8"))
     assert metadata.privacy_status == "private"
-    assert payload["generated"]["title"] == "知識標題"
+    assert payload["generated"]["title"] == "知識標題：來源鉤子"
     assert payload["generated"]["title_variants"][0] == {
-        "title": "知識標題",
-        "strategy": "macro_reframe",
-        "rationale": "拉出宏觀脈絡。",
+        "title": "知識標題：來源鉤子",
+        "strategy": "source_equity_hook",
+        "rationale": "用來源中最強的點擊資產切入。",
     }
     assert payload["generated"]["privacy_status"] == "private"
     assert payload["source"]["video_id"] == "abc123DEF_-"
     assert payload["trace"]["model"] == "gpt-metadata"
-    assert payload["trace"]["prompt_version"] == "metadata-v10"
+    assert payload["trace"]["prompt_version"] == "metadata-v15"
     call_prompt = json.loads(str(client.calls[0]["user_prompt"]))
     assert call_prompt["candidate_suggested_title"] == "Candidate title"
+    assert call_prompt["candidate_editorial_package"] == {
+        "core_claim": "Candidate core claim",
+        "payoff": "Candidate payoff",
+        "argument_arc": ["setup", "evidence", "payoff"],
+        "boundary_notes": {"start": "starts cleanly", "end": "ends cleanly"},
+    }
     assert call_prompt["source_description_excerpt"] == "Source description"
     assert call_prompt["summary"] == "Candidate summary"
     assert call_prompt["transcript_excerpt"] == "Transcript excerpt"
-    assert call_prompt["brand_positioning"]["product"] == "InsightCast"
 
 
 @pytest.mark.asyncio
