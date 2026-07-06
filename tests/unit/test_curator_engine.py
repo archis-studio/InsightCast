@@ -16,6 +16,7 @@ from insightcast.engines.curator_engine import (
     TopicDiscoveryOutput,
     TopicDiscoveryResponse,
 )
+from insightcast.infrastructure.openai_client import capture_llm_telemetry
 
 
 class FakeStructuredClient:
@@ -59,6 +60,8 @@ def output(
     end: float,
     *,
     title: str = "Title",
+    score: float | None = 0.9,
+    boundary_ending_type: str = "conclusion",
 ) -> CuratorCandidateOutput:
     return CuratorCandidateOutput(
         candidate_id=candidate_id,
@@ -72,8 +75,8 @@ def output(
         argument_arc=["setup", "claim", "evidence", "conclusion"],
         boundary_start_reason="Starts at useful setup",
         boundary_end_reason="Ends at natural conclusion",
-        boundary_ending_type="conclusion",
-        score=0.9,
+        boundary_ending_type=boundary_ending_type,
+        score=score,
     )
 
 
@@ -454,7 +457,9 @@ async def test_curator_retries_once_with_validation_feedback() -> None:
 
     result = await engine.select_candidates(
         transcript=transcript(),
-        topics=valid_topics(),
+        topics=TopicDiscoveryResponse(
+            topics=[topic("T1", float("nan"), 300, 0.9)]
+        ),
         candidate_count=1,
         min_duration_minutes=8,
         max_duration_minutes=12,
@@ -470,6 +475,17 @@ async def test_curator_retries_once_with_validation_feedback() -> None:
     assert "target range 480" in retry_feedback
     assert "accepted range 420" in retry_feedback
     assert "final range 390" in retry_feedback
+    assert retry_payload["transcript_scope"] == "candidate_selection_retry_context"
+    assert retry_payload["transcript_is_complete"] is False
+    assert len(retry_payload["transcript"]) < len(
+        json.loads(str(client.calls[0]["user_prompt"]))["transcript"]
+    )
+    assert retry_payload["previous_candidates"][0]["candidate_id"] == "A"
+    assert retry_payload["retry_instruction"] == (
+        "Repair the candidate package using the validation feedback. Reuse any "
+        "valid reasoning from previous_candidates, but choose corrected source "
+        "boundaries from the compact transcript context."
+    )
 
 
 def test_build_topic_windows_adds_context_and_clamps_to_transcript() -> None:
@@ -931,10 +947,154 @@ async def test_selection_review_can_rank_lower_scored_candidate_first() -> None:
 
 
 @pytest.mark.asyncio
+async def test_selection_review_skips_clear_low_risk_candidates() -> None:
+    client = FakeStructuredClient(
+        [
+            CuratorResponse(
+                candidates=[
+                    output("A", 0, 600, title="Clear best", score=0.94),
+                    output("B", 900, 1500, title="Distant second", score=0.72),
+                ]
+            ),
+        ]
+    )
+
+    result = await CuratorEngine(
+        client=client,
+        model="gpt-curator",
+        enable_selection_review=True,
+    ).select_candidates(
+        transcript=segmented_transcript((0, 600), (900, 1500)),
+        topics=valid_topics(candidate_count=2),
+        candidate_count=2,
+        min_duration_minutes=8,
+        max_duration_minutes=12,
+    )
+
+    assert [candidate.candidate_id for candidate in result.candidates] == ["A", "B"]
+    assert [call["trace_name"] for call in client.calls] == ["candidate_selection"]
+
+
+@pytest.mark.asyncio
+async def test_selection_review_runs_when_top_scores_are_close() -> None:
+    client = FakeStructuredClient(
+        [
+            CuratorResponse(
+                candidates=[
+                    output("A", 0, 600, title="Slight lead", score=0.86),
+                    output("B", 900, 1500, title="Close second", score=0.82),
+                ]
+            ),
+            SelectionReviewResponse(
+                candidates=[
+                    SelectionReviewCandidateOutput(
+                        candidate_id="B",
+                        rank=1,
+                        adjusted_start_seconds=900,
+                        adjusted_end_seconds=1500,
+                        selection_reason="B has a cleaner standalone payoff.",
+                        boundary_adjustment_reason="No adjustment needed.",
+                        risk_notes="Low risk.",
+                    ),
+                    SelectionReviewCandidateOutput(
+                        candidate_id="A",
+                        rank=2,
+                        adjusted_start_seconds=0,
+                        adjusted_end_seconds=600,
+                        selection_reason="A is close but weaker.",
+                        boundary_adjustment_reason="No adjustment needed.",
+                        risk_notes="Close score.",
+                    ),
+                ]
+            ),
+        ]
+    )
+
+    result = await CuratorEngine(
+        client=client,
+        model="gpt-curator",
+        enable_selection_review=True,
+    ).select_candidates(
+        transcript=segmented_transcript((0, 600), (900, 1500)),
+        topics=valid_topics(candidate_count=2),
+        candidate_count=2,
+        min_duration_minutes=8,
+        max_duration_minutes=12,
+    )
+
+    by_id = {candidate.candidate_id: candidate for candidate in result.candidates}
+    assert by_id["B"].score == 1.0
+    assert [call["trace_name"] for call in client.calls] == [
+        "candidate_selection",
+        "selection_review",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_selection_review_window_plan_records_trigger_reason() -> None:
+    client = FakeStructuredClient(
+        [
+            CuratorResponse(
+                candidates=[
+                    output("A", 0, 600, title="Slight lead", score=0.86),
+                    output("B", 900, 1500, title="Close second", score=0.82),
+                ]
+            ),
+            SelectionReviewResponse(
+                candidates=[
+                    SelectionReviewCandidateOutput(
+                        candidate_id="A",
+                        rank=1,
+                        adjusted_start_seconds=0,
+                        adjusted_end_seconds=600,
+                        selection_reason="A remains stronger.",
+                        boundary_adjustment_reason="No adjustment needed.",
+                        risk_notes="Close score checked.",
+                    ),
+                    SelectionReviewCandidateOutput(
+                        candidate_id="B",
+                        rank=2,
+                        adjusted_start_seconds=900,
+                        adjusted_end_seconds=1500,
+                        selection_reason="B is close but weaker.",
+                        boundary_adjustment_reason="No adjustment needed.",
+                        risk_notes="Close score checked.",
+                    ),
+                ]
+            ),
+        ]
+    )
+    telemetry: list[dict[str, object]] = []
+
+    with capture_llm_telemetry(telemetry.append):
+        await CuratorEngine(
+            client=client,
+            model="gpt-curator",
+            enable_selection_review=True,
+        ).select_candidates(
+            transcript=segmented_transcript((0, 600), (900, 1500)),
+            topics=valid_topics(candidate_count=2),
+            candidate_count=2,
+            min_duration_minutes=8,
+            max_duration_minutes=12,
+        )
+
+    selection_review_windows = [
+        event
+        for event in telemetry
+        if event.get("event") == "window_plan"
+        and event.get("trace_name") == "selection_review"
+    ]
+    assert selection_review_windows[0]["reason"] == "close_candidate_scores"
+
+
+@pytest.mark.asyncio
 async def test_selection_review_can_extend_boundary_to_natural_ending() -> None:
     client = FakeStructuredClient(
         [
-            CuratorResponse(candidates=[output("A", 0, 480)]),
+            CuratorResponse(
+                candidates=[output("A", 0, 480, boundary_ending_type="open_loop")]
+            ),
             SelectionReviewResponse(
                 candidates=[
                     SelectionReviewCandidateOutput(
@@ -975,7 +1135,9 @@ async def test_selection_review_can_extend_boundary_to_natural_ending() -> None:
 async def test_selection_review_uses_compact_candidate_context() -> None:
     client = FakeStructuredClient(
         [
-            CuratorResponse(candidates=[output("A", 100, 700)]),
+            CuratorResponse(
+                candidates=[output("A", 100, 700, boundary_ending_type="open_loop")]
+            ),
             SelectionReviewResponse(
                 candidates=[
                     SelectionReviewCandidateOutput(
@@ -1019,7 +1181,9 @@ async def test_selection_review_uses_compact_candidate_context() -> None:
 async def test_selection_review_uses_boundary_excerpts_not_full_candidate_transcript() -> None:
     client = FakeStructuredClient(
         [
-            CuratorResponse(candidates=[output("A", 120, 720)]),
+            CuratorResponse(
+                candidates=[output("A", 120, 720, boundary_ending_type="open_loop")]
+            ),
             SelectionReviewResponse(
                 candidates=[
                     SelectionReviewCandidateOutput(
@@ -1064,7 +1228,7 @@ async def test_selection_review_uses_boundary_excerpts_not_full_candidate_transc
         "evidence",
         "conclusion",
     ]
-    assert review_payload["candidates"][0]["boundary_ending_type"] == "conclusion"
+    assert review_payload["candidates"][0]["boundary_ending_type"] == "open_loop"
 
 
 @pytest.mark.asyncio

@@ -34,6 +34,7 @@ def build_user_prompt(
     transcript_is_complete: bool = False,
     selection_window_plan: Sequence[Mapping[str, Any]] | None = None,
     selection_hints: Sequence[Mapping[str, Any]] | None = None,
+    previous_candidates: Sequence[Mapping[str, Any]] | None = None,
     original_segment_count: int | None = None,
     provided_segment_count: int | None = None,
     source_duration_seconds: float | None = None,
@@ -174,6 +175,14 @@ def build_user_prompt(
         "transcript_is_complete": transcript_is_complete,
         "selection_window_plan": list(selection_window_plan or []),
         "selection_hints": list(selection_hints or []),
+        "previous_candidates": list(previous_candidates or []),
+        "retry_instruction": (
+            "Repair the candidate package using the validation feedback. Reuse any "
+            "valid reasoning from previous_candidates, but choose corrected source "
+            "boundaries from the compact transcript context."
+            if validation_feedback
+            else None
+        ),
         "original_segment_count": original_segment_count,
         "provided_segment_count": provided_segment_count,
         "transcript": list(transcript),

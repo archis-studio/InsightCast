@@ -122,6 +122,7 @@ class JobService:
         self._operation_started_at: dict[str, float] = {}
         self._operation_stage_metrics: dict[str, dict[str, float]] = {}
         self._operation_llm_metrics: dict[str, dict[str, dict[str, int]]] = {}
+        self._operation_llm_skipped: dict[str, dict[str, int]] = {}
         self._operation_window_plan: dict[str, dict[str, dict[str, Any]]] = {}
         self.processed_work: list[WorkItem] = []
         self.video_store = VideoStore(self.output_root, FileJobWriter())
@@ -1434,6 +1435,7 @@ class JobService:
         self._operation_started_at[job_id] = perf_counter()
         self._operation_stage_metrics[job_id] = {}
         self._operation_llm_metrics[job_id] = {}
+        self._operation_llm_skipped[job_id] = {}
         self._operation_window_plan[job_id] = {}
 
     def _record_stage_metric(
@@ -1449,6 +1451,11 @@ class JobService:
         if event == "window_plan":
             trace_name = str(fields.get("trace_name") or "unknown")
             self._operation_window_plan.setdefault(job_id, {})[trace_name] = fields.copy()
+            return
+        if event == "skipped":
+            trace_name = str(fields.get("trace_name") or "unknown")
+            skipped = self._operation_llm_skipped.setdefault(job_id, {})
+            skipped[trace_name] = skipped.get(trace_name, 0) + 1
             return
         if event != "completed":
             return
@@ -1524,6 +1531,11 @@ class JobService:
                 repair_calls / translation_calls,
                 3,
             )
+        for trace_name, skipped_count in self._operation_llm_skipped.get(
+            job_id,
+            {},
+        ).items():
+            fields[f"llm_{_metric_key(trace_name)}_skipped"] = skipped_count
         return fields
 
     def _window_plan_summary_fields(self, job_id: str) -> dict[str, Any]:

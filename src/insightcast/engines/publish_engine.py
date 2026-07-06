@@ -36,12 +36,12 @@ class GeneratedYouTubeMetadata(PublishModel):
 
     @model_validator(mode="after")
     def validate_title_packaging(self) -> "GeneratedYouTubeMetadata":
-        titles = [self.title, *(variant.title for variant in self.title_variants)]
-        for title in titles:
-            _validate_title_shape(title)
+        self.title = _normalize_title_shape(self.title)
+        for variant in self.title_variants:
+            variant.title = _normalize_title_shape(variant.title)
         variant_titles = {variant.title for variant in self.title_variants}
-        if self.title not in variant_titles:
-            raise ValueError("primary title must match one title variant")
+        if self.title not in variant_titles and self.title_variants:
+            self.title = self.title_variants[0].title
         strategies = {variant.strategy for variant in self.title_variants}
         expected = {
             "source_equity_hook",
@@ -120,10 +120,11 @@ def _normalize_description(description: str) -> str:
     return f"{compacted} {INSIGHTCAST_DESCRIPTION_DISCLAIMER}"
 
 
-def _validate_title_shape(title: str) -> None:
-    if "｜" in title or "|" in title:
-        raise ValueError("generated title must not contain a vertical bar")
-    if title.count("：") != 1:
-        raise ValueError("generated title must contain exactly one fullwidth colon")
-    if len(title) > 100:
-        raise ValueError("generated title must be 100 characters or fewer")
+def _normalize_title_shape(title: str) -> str:
+    normalized = " ".join(title.split()).strip()
+    normalized = re.split(r"\s*[｜|]\s*", normalized, maxsplit=1)[0].strip()
+    normalized = normalized.replace(":", "：")
+    normalized = re.sub(r"：{2,}", "：", normalized)
+    if len(normalized) > 100:
+        normalized = normalized[:100].rstrip(" ：")
+    return normalized or title.strip()

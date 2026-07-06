@@ -2,7 +2,6 @@ import json
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
 from insightcast.engines.publish_engine import (
     GeneratedYouTubeMetadata,
@@ -43,56 +42,61 @@ class FakeStructuredClient:
         )
 
 
-def test_generated_metadata_rejects_malformed_title_structure() -> None:
-    with pytest.raises(ValidationError, match="exactly one fullwidth colon"):
-        GeneratedYouTubeMetadata(
-            title="不是撐到退休就好：：工作帶來身份、目的感",
-            title_variants=[
-                {
-                    "title": "不是撐到退休就好：：工作帶來身份、目的感",
-                    "strategy": "source_equity_hook",
-                    "rationale": "Bad double colon.",
-                },
-                {
-                    "title": "機制標題：說明底層機制",
-                    "strategy": "mechanism_breakdown",
-                    "rationale": "Mechanism.",
-                },
-                {
-                    "title": "痛點標題：重框觀眾痛點",
-                    "strategy": "audience_pain_reframe",
-                    "rationale": "Pain.",
-                },
-            ],
-            description="說明",
-            tags=[],
-        )
+def test_generated_metadata_normalizes_malformed_title_structure() -> None:
+    metadata = GeneratedYouTubeMetadata(
+        title="不是撐到退休就好：：工作帶來身份、目的感",
+        title_variants=[
+            {
+                "title": "不是撐到退休就好：：工作帶來身份、目的感",
+                "strategy": "source_equity_hook",
+                "rationale": "Bad double colon.",
+            },
+            {
+                "title": "機制標題:說明底層機制",
+                "strategy": "mechanism_breakdown",
+                "rationale": "Mechanism.",
+            },
+            {
+                "title": "痛點標題：重框觀眾痛點",
+                "strategy": "audience_pain_reframe",
+                "rationale": "Pain.",
+            },
+        ],
+        description="說明",
+        tags=[],
+    )
+
+    assert metadata.title == "不是撐到退休就好：工作帶來身份、目的感"
+    assert metadata.title_variants[0].title == metadata.title
+    assert metadata.title_variants[1].title == "機制標題：說明底層機制"
 
 
-def test_generated_metadata_rejects_speaker_suffix_bar() -> None:
-    with pytest.raises(ValidationError, match="must not contain a vertical bar"):
-        GeneratedYouTubeMetadata(
-            title="退休規劃的認知誤區：不要把快樂全押在以後｜Morgan Housel",
-            title_variants=[
-                {
-                    "title": "退休規劃的認知誤區：不要把快樂全押在以後｜Morgan Housel",
-                    "strategy": "source_equity_hook",
-                    "rationale": "Bad speaker suffix.",
-                },
-                {
-                    "title": "工作身份的底層機制：退休後少了刺激反而更空",
-                    "strategy": "mechanism_breakdown",
-                    "rationale": "Mechanism.",
-                },
-                {
-                    "title": "提早退休前該想清楚：你失去的可能不只是工作",
-                    "strategy": "audience_pain_reframe",
-                    "rationale": "Pain.",
-                },
-            ],
-            description="說明",
-            tags=[],
-        )
+def test_generated_metadata_normalizes_speaker_suffix_bar() -> None:
+    metadata = GeneratedYouTubeMetadata(
+        title="退休規劃的認知誤區：不要把快樂全押在以後｜Morgan Housel",
+        title_variants=[
+            {
+                "title": "退休規劃的認知誤區：不要把快樂全押在以後｜Morgan Housel",
+                "strategy": "source_equity_hook",
+                "rationale": "Bad speaker suffix.",
+            },
+            {
+                "title": "工作身份的底層機制：退休後少了刺激反而更空",
+                "strategy": "mechanism_breakdown",
+                "rationale": "Mechanism.",
+            },
+            {
+                "title": "提早退休前該想清楚：你失去的可能不只是工作",
+                "strategy": "audience_pain_reframe",
+                "rationale": "Pain.",
+            },
+        ],
+        description="說明",
+        tags=[],
+    )
+
+    assert metadata.title == "退休規劃的認知誤區：不要把快樂全押在以後"
+    assert metadata.title_variants[0].title == metadata.title
 
 
 @pytest.mark.asyncio

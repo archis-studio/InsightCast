@@ -27,7 +27,16 @@ DISCOVERY_MIN_WINDOW_SECONDS = 4 * 60
 DISCOVERY_MIN_WINDOW_COUNT = 3
 DISCOVERY_WINDOWS_PER_CANDIDATE = 1
 SELECTION_PROMPT_CHAR_BUDGET = 36_000
+SELECTION_RETRY_PROMPT_CHAR_BUDGET = 12_000
 SELECTION_REVIEW_BOUNDARY_SECONDS = 120
+SELECTION_REVIEW_CLOSE_SCORE_GAP = 0.08
+SELECTION_REVIEW_HIGH_CONFIDENCE_SCORE = 0.85
+LOW_RISK_BOUNDARY_ENDING_TYPES = {
+    "clear_conclusion",
+    "complete",
+    "conclusion",
+    "natural_conclusion",
+}
 FRAMEWORK_SIGNAL_TERMS = (
     "because",
     "therefore",
@@ -384,9 +393,6 @@ class CuratorEngine:
             final_max_duration_seconds=final_max_duration_seconds,
             char_budget=SELECTION_PROMPT_CHAR_BUDGET,
         )
-        serialized_transcript = serialize_transcript_segments_for_prompt(
-            prompt_plan.segments
-        )
         selection_hints = _build_selection_hints(
             segments=prompt_plan.segments,
             windows=prompt_plan.windows,
@@ -418,7 +424,49 @@ class CuratorEngine:
                 ),
             }
         )
+        previous_candidates: list[CuratorCandidateOutput] = []
         for attempt in range(2):
+            current_prompt_plan = prompt_plan
+            current_selection_hints = selection_hints
+            if attempt > 0:
+                current_prompt_plan = _plan_candidate_selection_retry_transcript(
+                    segments=transcript.segments,
+                    topics=topics.topics,
+                    previous_candidates=previous_candidates,
+                    candidate_count=candidate_count,
+                    target_min_duration_seconds=target_min_duration_seconds,
+                    final_max_duration_seconds=final_max_duration_seconds,
+                    char_budget=SELECTION_RETRY_PROMPT_CHAR_BUDGET,
+                )
+                current_selection_hints = _build_selection_hints(
+                    segments=current_prompt_plan.segments,
+                    windows=current_prompt_plan.windows,
+                )
+                emit_llm_telemetry(
+                    {
+                        "event": "window_plan",
+                        "trace_name": "candidate_selection",
+                        "reason": "retry_validation_feedback",
+                        "transcript_scope": current_prompt_plan.transcript_scope,
+                        "transcript_is_complete": (
+                            current_prompt_plan.transcript_is_complete
+                        ),
+                        "original_segments": current_prompt_plan.original_segment_count,
+                        "provided_segments": current_prompt_plan.provided_segment_count,
+                        "window_count": len(current_prompt_plan.windows),
+                        "prompt_char_budget": SELECTION_RETRY_PROMPT_CHAR_BUDGET,
+                        "estimated_transcript_chars": _serialized_transcript_chars(
+                            transcript.segments
+                        ),
+                        "provided_transcript_chars": _serialized_transcript_chars(
+                            current_prompt_plan.segments
+                        ),
+                        "selection_hint_count": len(current_selection_hints),
+                    }
+                )
+            serialized_transcript = serialize_transcript_segments_for_prompt(
+                current_prompt_plan.segments
+            )
             response = await self.client.parse(
                 model=self.model,
                 system_prompt=curator.SYSTEM_PROMPT,
@@ -433,17 +481,24 @@ class CuratorEngine:
                     final_min_duration_seconds=final_min_duration_seconds,
                     final_max_duration_seconds=final_max_duration_seconds,
                     validation_feedback=feedback,
-                    transcript_scope=prompt_plan.transcript_scope,
-                    transcript_is_complete=prompt_plan.transcript_is_complete,
-                    selection_window_plan=_window_plan_payload(prompt_plan.windows),
-                    selection_hints=selection_hints,
-                    original_segment_count=prompt_plan.original_segment_count,
-                    provided_segment_count=prompt_plan.provided_segment_count,
+                    transcript_scope=current_prompt_plan.transcript_scope,
+                    transcript_is_complete=current_prompt_plan.transcript_is_complete,
+                    selection_window_plan=_window_plan_payload(
+                        current_prompt_plan.windows
+                    ),
+                    selection_hints=current_selection_hints,
+                    previous_candidates=[
+                        candidate.model_dump(mode="json")
+                        for candidate in previous_candidates
+                    ],
+                    original_segment_count=current_prompt_plan.original_segment_count,
+                    provided_segment_count=current_prompt_plan.provided_segment_count,
                     source_duration_seconds=transcript.duration_seconds,
                 ),
                 response_model=CuratorResponse,
                 trace_name="candidate_selection",
             )
+            previous_candidates = response.candidates
             normalized_candidates, normalization_errors = self._normalize_candidates(
                 response.candidates,
                 transcript=transcript,
@@ -472,9 +527,18 @@ class CuratorEngine:
                 and _only_candidate_count_shortage(errors)
             )
             if not errors or has_acceptable_partial_result:
-                if self.enable_selection_review:
+                review_reason = _selection_review_reason(
+                    normalized_candidates,
+                    candidate_count=candidate_count,
+                    target_min_duration_seconds=target_min_duration_seconds,
+                    target_max_duration_seconds=target_max_duration_seconds,
+                    has_acceptable_partial_result=has_acceptable_partial_result,
+                )
+                did_selection_review = False
+                if self.enable_selection_review and review_reason is not None:
                     normalized_candidates = await self._review_candidates(
                         normalized_candidates,
+                        reason=review_reason,
                         transcript=transcript,
                         target_min_duration_seconds=target_min_duration_seconds,
                         target_max_duration_seconds=target_max_duration_seconds,
@@ -482,6 +546,16 @@ class CuratorEngine:
                         accepted_max_duration_seconds=accepted_max_duration_seconds,
                         final_min_duration_seconds=final_min_duration_seconds,
                         final_max_duration_seconds=final_max_duration_seconds,
+                    )
+                    did_selection_review = True
+                elif self.enable_selection_review:
+                    emit_llm_telemetry(
+                        {
+                            "event": "skipped",
+                            "trace_name": "selection_review",
+                            "reason": "clear_low_risk_candidates",
+                            "candidate_count": len(normalized_candidates),
+                        }
                     )
                 return CurationResult(
                     candidates=[
@@ -493,7 +567,7 @@ class CuratorEngine:
                         f"{topic_discovery.PROMPT_VERSION}+{curator.PROMPT_VERSION}"
                         + (
                             f"+{selection_review.PROMPT_VERSION}"
-                            if self.enable_selection_review
+                            if did_selection_review
                             else ""
                         )
                     ),
@@ -525,6 +599,7 @@ class CuratorEngine:
         self,
         candidates: list[CuratorCandidateOutput],
         *,
+        reason: str,
         transcript: Transcript,
         target_min_duration_seconds: float,
         target_max_duration_seconds: float,
@@ -542,6 +617,7 @@ class CuratorEngine:
             {
                 "event": "window_plan",
                 "trace_name": "selection_review",
+                "reason": reason,
                 "transcript_scope": "candidate_local_context",
                 "transcript_is_complete": False,
                 "original_segments": len(transcript.segments),
@@ -770,6 +846,62 @@ def _plan_candidate_selection_transcript(
     return TranscriptPromptPlan(
         segments=selected_segments,
         transcript_scope="budgeted_topic_windows_for_candidate_selection",
+        transcript_is_complete=False,
+        windows=windows,
+        original_segment_count=len(original),
+    )
+
+
+def _plan_candidate_selection_retry_transcript(
+    *,
+    segments: Sequence[TranscriptSegment],
+    topics: Sequence[TopicDiscoveryOutput],
+    previous_candidates: Sequence[CuratorCandidateOutput],
+    candidate_count: int,
+    target_min_duration_seconds: float,
+    final_max_duration_seconds: float,
+    char_budget: int,
+) -> TranscriptPromptPlan:
+    original = list(segments)
+    if not original:
+        return TranscriptPromptPlan(
+            segments=[],
+            transcript_scope="candidate_selection_retry_context",
+            transcript_is_complete=False,
+            windows=[],
+            original_segment_count=0,
+        )
+
+    transcript_start = original[0].start_seconds
+    transcript_end = original[-1].end_seconds
+    windows = _candidate_context_windows(
+        previous_candidates,
+        transcript_start=transcript_start,
+        transcript_end=transcript_end,
+    )
+    if not windows:
+        windows = _build_topic_time_windows(
+            segments=original,
+            topics=topics,
+            target_min_duration_seconds=target_min_duration_seconds,
+            final_max_duration_seconds=final_max_duration_seconds,
+        )
+    windows = _select_budgeted_topic_windows(
+        segments=original,
+        windows=windows,
+        char_budget=char_budget,
+        minimum_window_count=min(candidate_count, max(len(windows), 1)),
+    )
+    selected_segments = _segments_in_windows(original, windows)
+    if not selected_segments:
+        selected_segments = original[:1]
+        windows = [
+            (selected_segments[0].start_seconds, selected_segments[-1].end_seconds)
+        ]
+
+    return TranscriptPromptPlan(
+        segments=selected_segments,
+        transcript_scope="candidate_selection_retry_context",
         transcript_is_complete=False,
         windows=windows,
         original_segment_count=len(original),
@@ -1340,6 +1472,48 @@ def _apply_selection_review(
         if candidate.candidate_id in reviewed_by_id
     ]
     return ordered, errors
+
+
+def _selection_review_reason(
+    candidates: Sequence[CuratorCandidateOutput],
+    *,
+    candidate_count: int,
+    target_min_duration_seconds: float,
+    target_max_duration_seconds: float,
+    has_acceptable_partial_result: bool,
+) -> str | None:
+    if has_acceptable_partial_result or len(candidates) < candidate_count:
+        return "partial_candidate_set"
+    if not candidates:
+        return "empty_candidate_set"
+    scores = [candidate.score for candidate in candidates]
+    if any(score is None for score in scores):
+        return "missing_candidate_score"
+    numeric_scores = [score for score in scores if score is not None]
+    if numeric_scores and max(numeric_scores) < SELECTION_REVIEW_HIGH_CONFIDENCE_SCORE:
+        return "low_top_score"
+    if len(numeric_scores) > 1:
+        ranked_scores = sorted(numeric_scores, reverse=True)
+        if ranked_scores[0] - ranked_scores[1] <= SELECTION_REVIEW_CLOSE_SCORE_GAP:
+            return "close_candidate_scores"
+    if any(
+        _normalized_boundary_ending_type(candidate.boundary_ending_type)
+        not in LOW_RISK_BOUNDARY_ENDING_TYPES
+        for candidate in candidates
+    ):
+        return "uncertain_boundary_ending"
+    if any(
+        (candidate.end_seconds - candidate.start_seconds) < target_min_duration_seconds
+        or (candidate.end_seconds - candidate.start_seconds)
+        > target_max_duration_seconds
+        for candidate in candidates
+    ):
+        return "duration_outside_target"
+    return None
+
+
+def _normalized_boundary_ending_type(value: str) -> str:
+    return value.strip().lower().replace(" ", "_").replace("-", "_")
 
 
 def _review_rank_score(rank: int) -> float:

@@ -268,6 +268,19 @@ class FailingCurator:
         raise AssertionError("selection must not run after discovery fails")
 
 
+class ReviewSkippedCurator(FakeCurator):
+    async def select_candidates(self, **kwargs: object) -> CurationResult:
+        emit_llm_telemetry(
+            {
+                "event": "skipped",
+                "trace_name": "selection_review",
+                "reason": "clear_low_risk_candidates",
+                "candidate_count": 2,
+            }
+        )
+        return await super().select_candidates(**kwargs)
+
+
 class FakeClip:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -1187,6 +1200,38 @@ async def test_analysis_emits_concise_task_progress_events(
         and "event: 'analysis_completed'" in message
         and "stage_topic_discovery_seconds:" in message
         and "llm_total_tokens: 8" in message
+        for message in messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_analysis_summary_counts_skipped_llm_stages_without_call_cost(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service = JobService(
+        output_root=tmp_path / "outputs",
+        work_root=tmp_path / ".work",
+        source_engine=FakeSource(),
+        transcription_client=FakeTranscriber(),
+        curator_engine=ReviewSkippedCurator(),
+        clip_engine=FakeClip(),
+        publish_engine=FakePublish(),
+        writer=FileJobWriter(),
+        clock=Clock(),
+        id_factory=IdFactory(),
+    )
+
+    with caplog.at_level(logging.INFO, logger="insightcast.task"):
+        job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+        await service.process(await service.queue.get())
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        "InsightCast task_summary" in message
+        and f"job_id={job.job_id}" in message
+        and "llm_calls: 1" in message
+        and "llm_selection_review_skipped: 1" in message
         for message in messages
     )
 
