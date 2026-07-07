@@ -1,152 +1,69 @@
 # Agent Instructions
 
-## Operating Model
-
 This repository is local-first. Treat the API server as user-managed process
-state, and treat the repository CLIs as the canonical operator interface.
+state, and treat repository CLIs as the canonical operator interface.
+
+## Operating Rules
 
 1. Work from the repository root.
 2. Never print `.env`, `OPENAI_API_KEY`, or raw request headers containing
    secrets.
 3. Do not start, stop, or restart `uv run cast_api` unless the user explicitly
    asks for server lifecycle work.
-4. Before analysis or rendering, verify the user already has the API running:
-
-   ```bash
-   curl -fsS http://127.0.0.1:8765/health
-   ps -axo pid,command | rg 'uv run cast_api|cast_api'
-   ```
-
-5. If a command fails because of network, uv cache, package download, YouTube,
-   OpenAI, or other sandbox-restricted access, rerun the same necessary command
-   with the required approval/escalation mechanism instead of inventing a
-   different workflow.
-6. Keep generated media, `.work/`, `outputs/`, and `.env` out of commits unless
+4. Keep generated media, `.work/`, `outputs/`, and `.env` out of commits unless
    the user explicitly requests otherwise.
+5. If a command fails because of network, uv cache, package download, YouTube,
+   OpenAI, or another sandbox-restricted dependency, rerun the same necessary
+   command with the required approval/escalation mechanism.
 
-## CLI Responsibilities
+## Server Check
 
-### `uv run cast_api`
-
-Runs the FastAPI server. It is configured by `.env` / environment variables and
-does not expose operational CLI flags.
-
-Common settings:
-
-- `API_HOST`: server bind host. Use `127.0.0.1` for normal local runs.
-- `API_PORT`: server bind port, default `8765`.
-- `API_BASE_URL`: client-facing API URL used by CLIs, not the server bind.
-- `OUTPUT_DIR`: persistent video, analysis, render, and log root.
-- `WORK_DIR`: temporary pipeline workspace.
-- `OPENAI_API_KEY`: required and secret.
-
-### `uv run cast_analyze`
-
-Analyzes a YouTube URL through the running API.
+Before analysis or rendering, verify the user already has the API running:
 
 ```bash
-uv run cast_analyze [--verbose] [--force] "YOUTUBE_URL"
+curl -fsS http://127.0.0.1:8765/health
+ps -axo pid,command | rg 'uv run cast_api|cast_api'
 ```
 
-- `YOUTUBE_URL`: required YouTube watch, share, embed, or Shorts URL.
-- `--verbose`: print complete JSON responses after successful API requests.
-- `--force`: create a new analysis job instead of reusing the latest one for
-  the URL in the current server process.
+If the server is not reachable, tell the user to start `uv run cast_api` in a
+separate terminal. Do not start it yourself unless asked.
 
-### `uv run cast_render`
+## Analysis Workflow
 
-Renders selected candidate IDs through the running API.
+Use the CLI:
 
 ```bash
-uv run cast_render ANALYSIS_JOB_ID B --wait
-uv run cast_render ANALYSIS_JOB_ID A B --wait
-uv run cast_render ANALYSIS_JOB_ID B --wait --force-render
-uv run cast_render ANALYSIS_JOB_ID B --video-id VIDEO_ID --analysis-id ANALYSIS_ID
+uv run cast_analyze "YOUTUBE_URL"
 ```
 
-- `ANALYSIS_JOB_ID`: required job ID from `cast_analyze`; valid only while the
-  current server process still knows the job.
-- `candidate_ids`: one or more candidate IDs, such as `A`, `B`, or `A B`.
-- `--wait`: poll until the render batch completes or fails. Use this for normal
-  operator work.
-- `--force-render`: create a new render even if reusable artifacts already
-  exist. Use only when the user explicitly wants a fresh render.
-- `--video-id` and `--analysis-id`: optional recovery context. When
-  `ANALYSIS_JOB_ID` is gone after an API restart, these let the CLI query
-  persisted ready render artifacts for the same analysis/candidate. They do not
-  queue new render work.
+Use `--force` only when the user asks for a fresh analysis. Use `--verbose` when
+raw API payloads are needed for diagnosis.
 
-## YouTube Analysis Workflow
-
-Use the repository CLI as the canonical way to analyze a YouTube URL.
-
-1. Do not start or stop the API server as part of analysis.
-2. Check that the user has separately run `uv run cast_api`.
-3. From the repository root, run `uv run cast_analyze "<youtube-url>"`.
-4. Add `--verbose` when raw API payloads are needed for diagnosis.
-5. Treat `WAITING_SELECTION` as successful analysis completion.
-6. Report candidate IDs, titles, time ranges, summaries, and source artifact paths.
-7. Also report the video root, analysis ID and directory, whether transcript reuse
-   occurred when the CLI or log makes it known, candidate directories, and the
-   operation log path.
-8. On failure, report the structured console error and inspect the referenced
-   `pipeline.log` when available.
-9. Do not queue renders unless the user explicitly requests rendering.
-10. If the server is not reachable, report that `uv run cast_api` must be started
-    in a separate terminal; do not start it yourself unless asked.
-
-## Candidate Render Workflow
-
-Use the repository CLI as the canonical way to render a candidate, only after
-the user explicitly asks to render.
-
-1. Do not start or stop the API server as part of rendering.
-2. Reuse the existing analysis job ID from the completed analysis whenever it is
-   still available in the running server process.
-3. From the repository root, render only the requested candidate IDs:
-
-   ```bash
-   uv run cast_render ANALYSIS_JOB_ID B --wait
-   ```
-
-4. Use `--force-render` only when the user explicitly requests a fresh render:
-
-   ```bash
-   uv run cast_render ANALYSIS_JOB_ID B --wait --force-render
-   ```
-
-5. Treat `COMPLETED` as successful render completion. Confirm the candidate
-   result has no error and that the render manifest says `render_state=ready`.
-6. Report the render ID, output directory, manifest path, `video.mp4`, Traditional
-   Chinese SRT, bilingual ASS, YouTube metadata, stage manifest, and operation
-   log path.
-7. Summarize stage status from `stage-manifest.json` or the render-list response,
-   especially `cut_clip`, `translate_subtitles`, `write_subtitles`,
-   `burn_subtitles`, `generate_metadata`, and `validate_render`.
-8. Verify the rendered MP4 with `ffprobe` when available, and report duration and
-   size.
-9. On failure, report the CLI/API error, inspect `stage-manifest.json`, and inspect
-   the operation log for the failed stage and traceback.
-10. If the API returns `JOB_NOT_FOUND`, explain that analysis job IDs are
-    process-local. If the previous analysis output includes `video_id` and
-    `analysis_id`, retry once with
-    `uv run cast_render ANALYSIS_JOB_ID CANDIDATE --video-id VIDEO_ID --analysis-id ANALYSIS_ID`
-    to report any matching ready persisted render. If no ready render exists,
-    ask the user to rerun analysis on the current server process.
-
-## Reporting Checklist
-
-For analysis success, include:
+Treat `WAITING_SELECTION` as successful analysis completion. Report:
 
 - Analysis job ID.
 - Video root.
 - Analysis ID and directory.
-- Transcript ID/path and whether reuse is known.
+- Transcript path and known reuse status.
 - Candidate IDs, titles, time ranges, and summaries.
 - Candidate directories.
 - Operation log path.
 
-For render success, include:
+Do not queue renders unless the user explicitly requests rendering.
+
+## Render Workflow
+
+Render only requested candidate IDs:
+
+```bash
+uv run cast_render ANALYSIS_JOB_ID B --wait
+```
+
+Use `--force-render` only when the user explicitly requests a fresh render.
+
+Treat `COMPLETED` as successful render completion only after confirming the
+candidate result has no error and the render manifest says `render_state=ready`.
+Report:
 
 - Render ID and output directory.
 - `manifest.json`.
@@ -157,4 +74,34 @@ For render success, include:
 - `youtube-metadata.json`.
 - Operation log path.
 - Stage status summary.
-- `ffprobe` duration and size when available.
+- `ffprobe` duration and file size when available.
+
+If the API returns `JOB_NOT_FOUND`, explain that analysis job IDs are
+process-local. If the prior output includes `video_id` and `analysis_id`, retry
+once with:
+
+```bash
+uv run cast_render ANALYSIS_JOB_ID CANDIDATE --video-id VIDEO_ID --analysis-id ANALYSIS_ID
+```
+
+This recovery path reports matching ready persisted renders; it does not queue
+new render work.
+
+## Failure Handling
+
+On analysis or render failure:
+
+- Report the structured CLI/API error.
+- Inspect the referenced operation log when available.
+- For render failures, inspect `stage-manifest.json` and identify the failed
+  stage.
+- Do not invent alternate workflows when the canonical CLI gives a clear
+  recovery path.
+
+## Source Of Truth
+
+- Human onboarding and examples: `README.md`.
+- Environment settings: `.env.example`.
+- CLI details: `uv run cast_analyze --help`, `uv run cast_render --help`,
+  `uv run cast_cache --help`.
+- Runtime API shape: OpenAPI at `/docs` when `cast_api` is running.
