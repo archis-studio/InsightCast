@@ -4,7 +4,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from insightcast.api.app import _build_runtime, _server_log_config, create_app
+from insightcast.api.app import _server_log_config, create_app
+from insightcast.api.runtime import build_runtime
 from insightcast.core.config import Settings
 
 
@@ -56,11 +57,11 @@ def test_health_reports_dependency_readiness_and_lifespan_probes_once(
 
 
 def test_runtime_uses_ytdlp_from_current_python_environment(tmp_path: Path) -> None:
-    service, _ = _build_runtime(settings(tmp_path))
+    runtime = build_runtime(settings(tmp_path))
 
-    assert Path(service.source_engine.ytdlp.executable) == Path(sys.executable).with_name(
-        "yt-dlp"
-    )
+    assert Path(runtime.service.source_engine.ytdlp.executable) == Path(
+        sys.executable
+    ).with_name("yt-dlp")
 
 
 def test_server_log_config_routes_only_task_logger_to_default_console() -> None:
