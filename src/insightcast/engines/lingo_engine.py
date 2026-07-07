@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from insightcast.core.exceptions import InsightCastError
 from insightcast.domain.enums import ErrorCode
 from insightcast.domain.models import TranscriptSegment
+from insightcast.infrastructure.openai_client import emit_llm_telemetry
 from insightcast.prompts import translation as translation_prompt
 
 TRANSLATION_BATCH_SIZE = 24
@@ -38,9 +39,16 @@ class SubtitleItem(LingoModel):
 
 
 class LingoEngine:
-    def __init__(self, *, client: Any | None = None, model: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        client: Any | None = None,
+        model: str | None = None,
+        batch_size: int = TRANSLATION_BATCH_SIZE,
+    ) -> None:
         self.client = client
         self.model = model
+        self.batch_size = max(1, batch_size)
 
     async def translate_clip(
         self,
@@ -58,10 +66,8 @@ class LingoEngine:
         if self.client is None or self.model is None:
             raise self._generation_error("Translation client is not configured.")
         translations: list[TranslationItem] = []
-        for batch_index, offset in enumerate(
-            range(0, len(selected), TRANSLATION_BATCH_SIZE)
-        ):
-            batch = selected[offset : offset + TRANSLATION_BATCH_SIZE]
+        for batch_index, offset in enumerate(range(0, len(selected), self.batch_size)):
+            batch = selected[offset : offset + self.batch_size]
             translations.extend(
                 await self._translate_batch(
                     batch,
@@ -110,6 +116,25 @@ class LingoEngine:
         )
         if translation_ids == source_ids and unreadable is None:
             return response.items
+        reason = _translation_validation_reason(
+            source_ids=source_ids,
+            translation_ids=translation_ids,
+            unreadable_segment_id=unreadable.segment_id if unreadable else None,
+        )
+        emit_llm_telemetry(
+            {
+                "event": "validation_failed",
+                "trace_name": "translate_subtitles",
+                "reason": reason,
+                "batch_index": batch_index,
+                "batch_path": batch_path,
+                "source_count": len(source_ids),
+                "translation_count": len(translation_ids),
+            }
+        )
+        salvaged = _salvage_translation_items(response.items, source_ids)
+        if salvaged is not None:
+            return salvaged
         validation_error = {
             "source_segment_ids": source_ids,
             "translation_segment_ids": translation_ids,
@@ -235,3 +260,42 @@ class LingoEngine:
 def _is_readable_translation(text: str) -> bool:
     stripped = text.strip()
     return bool(stripped) and any(character.isalnum() for character in stripped)
+
+
+def _salvage_translation_items(
+    translations: list[TranslationItem],
+    source_ids: list[str],
+) -> list[TranslationItem] | None:
+    by_source_id: dict[str, TranslationItem] = {}
+    for translation in translations:
+        if translation.segment_id not in source_ids:
+            continue
+        if translation.segment_id in by_source_id:
+            continue
+        if not _is_readable_translation(translation.text):
+            continue
+        by_source_id[translation.segment_id] = translation
+    if set(by_source_id) != set(source_ids):
+        return None
+    return [by_source_id[source_id] for source_id in source_ids]
+
+
+def _translation_validation_reason(
+    *,
+    source_ids: list[str],
+    translation_ids: list[str],
+    unreadable_segment_id: str | None,
+) -> str:
+    if unreadable_segment_id is not None:
+        return "unreadable"
+    source_set = set(source_ids)
+    translation_set = set(translation_ids)
+    if len(translation_ids) != len(set(translation_ids)):
+        return "duplicate_ids"
+    if not source_set.issubset(translation_set):
+        return "missing_ids"
+    if translation_set - source_set:
+        return "extra_ids"
+    if translation_ids != source_ids:
+        return "reordered_ids"
+    return "mapping_mismatch"

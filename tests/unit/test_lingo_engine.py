@@ -10,6 +10,7 @@ from insightcast.engines.lingo_engine import (
     TranslationItem,
     TranslationResponse,
 )
+from insightcast.infrastructure.openai_client import capture_llm_telemetry
 
 
 class RecordingTranslationClient:
@@ -76,6 +77,114 @@ async def test_translate_clip_batches_long_requests_in_source_order() -> None:
     assert [item.segment_id for item in result] == [
         f"s{index}" for index in range(85)
     ]
+
+
+@pytest.mark.asyncio
+async def test_translate_clip_uses_configured_batch_size() -> None:
+    segments = [
+        TranscriptSegment(
+            segment_id=f"s{index}",
+            start_seconds=index,
+            end_seconds=index + 1,
+            text=f"Source {index}",
+        )
+        for index in range(30)
+    ]
+    client = RecordingTranslationClient(
+        [
+            translation_response(*[f"s{index}" for index in range(0, 12)]),
+            translation_response(*[f"s{index}" for index in range(12, 24)]),
+            translation_response(*[f"s{index}" for index in range(24, 30)]),
+        ]
+    )
+
+    await LingoEngine(
+        client=client,
+        model="gpt-translation",
+        batch_size=12,
+    ).translate_clip(
+        segments=segments,
+        clip_start_seconds=0,
+        clip_end_seconds=30,
+    )
+
+    assert [
+        len(json.loads(str(call["user_prompt"]))["items"])
+        for call in client.calls
+    ] == [12, 12, 6]
+
+
+@pytest.mark.asyncio
+async def test_translate_clip_salvages_reordered_items_without_repair() -> None:
+    segments = [
+        TranscriptSegment(
+            segment_id=f"s{index}",
+            start_seconds=index,
+            end_seconds=index + 1,
+            text=f"Source {index}",
+        )
+        for index in range(3)
+    ]
+    client = RecordingTranslationClient(
+        [
+            translation_response_with_text(
+                ("s2", "第三"),
+                ("s0", "第一"),
+                ("s1", "第二"),
+            )
+        ]
+    )
+    telemetry: list[dict[str, object]] = []
+
+    with capture_llm_telemetry(telemetry.append):
+        result = await LingoEngine(
+            client=client,
+            model="gpt-translation",
+        ).translate_clip(
+            segments=segments,
+            clip_start_seconds=0,
+            clip_end_seconds=3,
+        )
+
+    assert len(client.calls) == 1
+    assert [item.traditional_chinese_text for item in result] == ["第一", "第二", "第三"]
+    assert any(
+        event.get("event") == "validation_failed"
+        and event.get("reason") == "reordered_ids"
+        for event in telemetry
+    )
+
+
+@pytest.mark.asyncio
+async def test_translate_clip_salvages_extra_and_duplicate_items_without_repair() -> None:
+    segments = [
+        TranscriptSegment(
+            segment_id=f"s{index}",
+            start_seconds=index,
+            end_seconds=index + 1,
+            text=f"Source {index}",
+        )
+        for index in range(2)
+    ]
+    client = RecordingTranslationClient(
+        [
+            translation_response_with_text(
+                ("extra", "多餘"),
+                ("s1", "第二"),
+                ("s0", "..."),
+                ("s0", "第一"),
+            )
+        ]
+    )
+
+    result = await LingoEngine(client=client, model="gpt-translation").translate_clip(
+        segments=segments,
+        clip_start_seconds=0,
+        clip_end_seconds=2,
+    )
+
+    assert len(client.calls) == 1
+    assert [item.traditional_chinese_text for item in result] == ["第一", "第二"]
 
 
 @pytest.mark.asyncio

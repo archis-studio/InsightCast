@@ -147,6 +147,8 @@ uv run cast_render ANALYSIS_JOB_ID B --wait --force-render
 | `OUTPUT_DIR` | `outputs` | 永久輸出：影片、字幕、transcript、manifest、log。 |
 | `WORK_DIR` | `.work` | pipeline 暫存目錄。 |
 | `LLM_MODEL` | `gpt-5.4-mini` | 分析、翻譯、metadata 預設文字模型。 |
+| `LLM_CAPABILITY_PROFILE` | `openai_strict` | 文字模型能力 profile。`local_conservative` 會採用較小字幕翻譯批次，較適合本地或 OpenAI-compatible 模型。 |
+| `TRANSLATION_BATCH_SIZE` | profile 決定 | 覆寫字幕翻譯批次大小；未設定時 `openai_strict=24`、`local_conservative=12`。 |
 | `TRANSCRIPTION_PROVIDER` | `openai` | `openai` 或 `local`。 |
 | `OPENAI_TRANSCRIPTION_MODEL` | `whisper-1` | OpenAI transcription model。 |
 | `OPENAI_TRANSCRIPTION_TIMEOUT_SECONDS` | `240` | 單個 OpenAI transcription chunk 的 timeout；逾時會依重試設定重跑該 chunk。 |

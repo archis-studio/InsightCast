@@ -90,6 +90,7 @@ def _build_runtime(settings: Settings) -> tuple[JobService, FfmpegClient]:
     lingo = LingoEngine(
         client=structured,
         model=settings.effective_translation_model,
+        batch_size=settings.effective_translation_batch_size,
     )
     service = JobService(
         output_root=settings.output_dir,

@@ -83,6 +83,29 @@ def test_analysis_cli_settings_have_defaults() -> None:
     assert settings.openai_retry_sleep_seconds == 10
     assert settings.subtitle_chinese_font_size == 72
     assert settings.subtitle_english_font_size == 60
+    assert settings.llm_capability_profile == "openai_strict"
+    assert settings.effective_translation_batch_size == 24
+
+
+def test_local_conservative_profile_uses_smaller_translation_batches() -> None:
+    settings = Settings(
+        _env_file=None,
+        openai_api_key="sk-test-value",
+        llm_capability_profile="local_conservative",
+    )
+
+    assert settings.effective_translation_batch_size == 12
+
+
+def test_translation_batch_size_override_wins_over_profile() -> None:
+    settings = Settings(
+        _env_file=None,
+        openai_api_key="sk-test-value",
+        llm_capability_profile="local_conservative",
+        translation_batch_size=18,
+    )
+
+    assert settings.effective_translation_batch_size == 18
 
 
 def test_analysis_cli_settings_load_environment_overrides(
@@ -138,6 +161,7 @@ def test_ytdlp_js_runtime_can_be_disabled() -> None:
         ("openai_retry_sleep_seconds", -1),
         ("subtitle_chinese_font_size", 0),
         ("subtitle_english_font_size", 0),
+        ("translation_batch_size", 0),
     ],
 )
 def test_settings_reject_invalid_ranges_and_empty_models(field: str, value: object) -> None:

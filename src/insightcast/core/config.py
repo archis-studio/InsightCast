@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     curator_model: str | None = None
     translation_model: str | None = None
     metadata_model: str | None = None
+    llm_capability_profile: Literal["openai_strict", "local_conservative"] = (
+        "openai_strict"
+    )
+    translation_batch_size: int | None = Field(default=None, ge=1, le=100)
 
     transcription_provider: Literal["openai", "local"] = "openai"
     openai_transcription_model: str = "whisper-1"
@@ -148,6 +152,14 @@ class Settings(BaseSettings):
     @property
     def effective_metadata_model(self) -> str:
         return self.metadata_model or self.llm_model
+
+    @property
+    def effective_translation_batch_size(self) -> int:
+        if self.translation_batch_size is not None:
+            return self.translation_batch_size
+        if self.llm_capability_profile == "local_conservative":
+            return 12
+        return 24
 
 
 @lru_cache
