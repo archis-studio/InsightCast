@@ -7,7 +7,7 @@ from openai import OpenAI
 from insightcast.core.config import Settings
 from insightcast.engines.clip_engine import ClipEngine
 from insightcast.engines.curator_engine import CuratorEngine
-from insightcast.engines.lingo_engine import LingoEngine
+from insightcast.engines.lingo_engine import LingoEngine, SubtitleTimingPolicy
 from insightcast.engines.publish_engine import PublishEngine
 from insightcast.engines.source_engine import SourceEngine
 from insightcast.infrastructure.ffmpeg_client import FfmpegClient
@@ -73,6 +73,13 @@ def build_runtime(settings: Settings) -> AppRuntime:
         client=structured,
         model=settings.effective_translation_model,
         batch_size=settings.effective_translation_batch_size,
+        timing_policy=SubtitleTimingPolicy(
+            enabled=settings.subtitle_timing_normalization,
+            offset_seconds=settings.subtitle_timing_offset_seconds,
+            min_duration_seconds=settings.subtitle_min_duration_seconds,
+            max_extension_seconds=settings.subtitle_max_extension_seconds,
+            min_gap_seconds=settings.subtitle_min_gap_seconds,
+        ),
     )
     service = JobService(
         output_root=settings.output_dir,

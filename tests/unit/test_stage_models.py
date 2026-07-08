@@ -18,12 +18,14 @@ def test_stage_record_accepts_completed_stage_with_elapsed_time() -> None:
         completed_at=NOW,
         elapsed_seconds=3.5,
         artifacts={"batch": Path("translations/batch-0001.json")},
+        metadata={"source_media": {"codec": "h264"}},
         resume_strategy="reuse completed translation batch",
     )
 
     assert record.stage is PipelineStage.TRANSLATE_SUBTITLES
     assert record.status is StageStatus.COMPLETED
     assert record.artifacts["batch"] == Path("translations/batch-0001.json")
+    assert record.metadata["source_media"] == {"codec": "h264"}
 
 
 def test_stage_record_requires_error_for_failed_stage() -> None:

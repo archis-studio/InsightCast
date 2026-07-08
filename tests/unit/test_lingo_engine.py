@@ -7,6 +7,7 @@ from insightcast.domain.enums import ErrorCode
 from insightcast.domain.models import TranscriptSegment
 from insightcast.engines.lingo_engine import (
     LingoEngine,
+    SubtitleTimingPolicy,
     TranslationItem,
     TranslationResponse,
 )
@@ -40,6 +41,19 @@ def translation_response_with_text(
             TranslationItem(segment_id=segment_id, text=text)
             for segment_id, text in items
         ]
+    )
+
+
+def subtitle_segment(
+    segment_id: str,
+    start_seconds: float,
+    end_seconds: float,
+) -> TranscriptSegment:
+    return TranscriptSegment(
+        segment_id=segment_id,
+        start_seconds=start_seconds,
+        end_seconds=end_seconds,
+        text=f"Source {segment_id}",
     )
 
 
@@ -77,6 +91,87 @@ async def test_translate_clip_batches_long_requests_in_source_order() -> None:
     assert [item.segment_id for item in result] == [
         f"s{index}" for index in range(85)
     ]
+
+
+def test_prepare_subtitle_items_applies_conservative_timing_policy() -> None:
+    segments = [
+        subtitle_segment("s1", 10.20, 10.80),
+        subtitle_segment("s2", 10.95, 13.00),
+    ]
+
+    items = LingoEngine(
+        timing_policy=SubtitleTimingPolicy(
+            enabled=True,
+            offset_seconds=-0.12,
+            min_duration_seconds=0.75,
+            max_extension_seconds=0.30,
+            min_gap_seconds=0.08,
+        )
+    ).prepare_subtitle_items(
+        segments=segments,
+        translations=[
+            TranslationItem(segment_id="s1", text="第一句"),
+            TranslationItem(segment_id="s2", text="第二句"),
+        ],
+        clip_start_seconds=10.0,
+        clip_end_seconds=14.0,
+    )
+
+    assert [(item.start_seconds, item.end_seconds) for item in items] == [
+        (0.08, 0.75),
+        (0.83, 2.88),
+    ]
+
+
+def test_prepare_subtitle_items_does_not_hold_fast_speech_too_long() -> None:
+    segments = [
+        subtitle_segment("s1", 1.00, 1.30),
+        subtitle_segment("s2", 1.36, 2.00),
+    ]
+
+    items = LingoEngine(
+        timing_policy=SubtitleTimingPolicy(
+            enabled=True,
+            offset_seconds=-0.12,
+            min_duration_seconds=0.75,
+            max_extension_seconds=0.30,
+            min_gap_seconds=0.08,
+        )
+    ).prepare_subtitle_items(
+        segments=segments,
+        translations=[
+            TranslationItem(segment_id="s1", text="短句"),
+            TranslationItem(segment_id="s2", text="下一句"),
+        ],
+        clip_start_seconds=0,
+        clip_end_seconds=3,
+    )
+
+    assert [(item.start_seconds, item.end_seconds) for item in items] == [
+        (0.88, 1.16),
+        (1.24, 1.99),
+    ]
+
+
+def test_prepare_subtitle_items_can_disable_timing_policy() -> None:
+    segments = [subtitle_segment("s1", 1.00, 1.30)]
+
+    items = LingoEngine(
+        timing_policy=SubtitleTimingPolicy(
+            enabled=False,
+            offset_seconds=-0.12,
+            min_duration_seconds=0.75,
+            max_extension_seconds=0.30,
+            min_gap_seconds=0.08,
+        )
+    ).prepare_subtitle_items(
+        segments=segments,
+        translations=[TranslationItem(segment_id="s1", text="短句")],
+        clip_start_seconds=0,
+        clip_end_seconds=2,
+    )
+
+    assert [(item.start_seconds, item.end_seconds) for item in items] == [(1.0, 1.3)]
 
 
 @pytest.mark.asyncio
@@ -412,7 +507,9 @@ def test_prepare_subtitle_items_filters_clamps_and_relativizes_segments() -> Non
         TranslationItem(segment_id="right", text="右側"),
     ]
 
-    items = LingoEngine().prepare_subtitle_items(
+    items = LingoEngine(
+        timing_policy=SubtitleTimingPolicy(enabled=False)
+    ).prepare_subtitle_items(
         segments=segments,
         translations=translations,
         clip_start_seconds=5,

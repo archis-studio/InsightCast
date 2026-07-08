@@ -9,9 +9,15 @@ from insightcast.infrastructure.ffmpeg_client import FfmpegClient
 
 
 class RecordingRunner:
-    def __init__(self, returncode: int = 0, stderr: str = "") -> None:
+    def __init__(
+        self,
+        returncode: int = 0,
+        stderr: str = "",
+        stdout: str = "",
+    ) -> None:
         self.returncode = returncode
         self.stderr = stderr
+        self.stdout = stdout
         self.calls: list[list[str]] = []
 
     def __call__(self, args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -19,7 +25,7 @@ class RecordingRunner:
         return subprocess.CompletedProcess(
             args=args,
             returncode=self.returncode,
-            stdout="",
+            stdout=self.stdout,
             stderr=self.stderr,
         )
 
@@ -127,3 +133,55 @@ async def test_render_failure_preserves_subprocess_details() -> None:
     assert exc_info.value.error_code == ErrorCode.VIDEO_RENDER_FAILED
     assert exc_info.value.details["returncode"] == 1
     assert "codec error" in exc_info.value.details["stderr"]
+
+
+@pytest.mark.asyncio
+async def test_media_profile_reads_video_stream_details(tmp_path: Path) -> None:
+    runner = RecordingRunner(
+        stdout=(
+            '{"format":{"duration":"12.345","bit_rate":"1234567"},'
+            '"streams":[{"codec_type":"video","codec_name":"h264",'
+            '"width":1920,"height":1080,"avg_frame_rate":"30000/1001",'
+            '"pix_fmt":"yuv420p"}]}'
+        )
+    )
+    source = tmp_path / "source.mp4"
+
+    profile = await FfmpegClient(ffmpeg_bin="ffprobe", runner=runner).media_profile(
+        source
+    )
+
+    assert runner.calls == [
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            str(source.resolve()),
+        ]
+    ]
+    assert profile == {
+        "codec": "h264",
+        "width": 1920,
+        "height": 1080,
+        "fps": 29.97,
+        "duration_seconds": 12.345,
+        "bitrate": 1234567,
+        "pixel_format": "yuv420p",
+    }
+
+
+@pytest.mark.asyncio
+async def test_media_profile_uses_ffprobe_next_to_configured_ffmpeg(
+    tmp_path: Path,
+) -> None:
+    runner = RecordingRunner(stdout='{"format":{},"streams":[]}')
+
+    await FfmpegClient(ffmpeg_bin="/opt/ffmpeg/bin/ffmpeg", runner=runner).media_profile(
+        tmp_path / "source.mp4"
+    )
+
+    assert runner.calls[0][0] == "/opt/ffmpeg/bin/ffprobe"

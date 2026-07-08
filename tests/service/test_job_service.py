@@ -399,6 +399,26 @@ class FakePublish:
         )
 
 
+class FakeMediaProfiler:
+    def __init__(self) -> None:
+        self.calls: list[Path] = []
+
+    async def media_profile(self, path: Path) -> dict[str, object]:
+        self.calls.append(path)
+        return {
+            "codec": "h264",
+            "width": 1920,
+            "height": 1080,
+            "path_name": path.name,
+        }
+
+
+class MediaProfileClip(FakeClip):
+    def __init__(self) -> None:
+        super().__init__()
+        self.ffmpeg = FakeMediaProfiler()
+
+
 class BlockingCutClip(FakeClip):
     def __init__(self) -> None:
         super().__init__()
@@ -975,6 +995,38 @@ async def test_candidate_render_writes_stage_manifest(tmp_path: Path) -> None:
     assert payload["stages"][0]["artifacts"]["temporary_clip"].endswith(
         "A.unburned.mp4"
     )
+
+
+@pytest.mark.asyncio
+async def test_candidate_render_records_media_profiles_in_stage_manifest(
+    tmp_path: Path,
+) -> None:
+    service, _, _ = make_service(tmp_path)
+    clip = MediaProfileClip()
+    service.clip_engine = clip
+    job = await service.create_analysis_job("https://youtu.be/abc123DEF_-")
+    await service.process(await service.queue.get())
+
+    batch = await service.create_render(
+        job.job_id,
+        CandidateSelectionRequest(candidate_ids="A", force_render=True),
+    )
+    await service.process(await service.queue.get())
+
+    payload = json.loads(
+        (batch.output_dir / "stage-manifest.json").read_text(encoding="utf-8")
+    )
+    cut_clip = next(stage for stage in payload["stages"] if stage["stage"] == "cut_clip")
+    burn_subtitles = next(
+        stage for stage in payload["stages"] if stage["stage"] == "burn_subtitles"
+    )
+
+    assert cut_clip["metadata"]["source_media"]["path_name"] == "source.mp4"
+    assert cut_clip["metadata"]["temporary_clip_media"]["path_name"] == (
+        "A.unburned.mp4"
+    )
+    assert burn_subtitles["metadata"]["input_media"]["path_name"] == "A.unburned.mp4"
+    assert burn_subtitles["metadata"]["output_media"]["path_name"] == "video.mp4"
 
 
 @pytest.mark.asyncio

@@ -157,6 +157,7 @@ uv run cast_analyze --verbose "https://youtu.be/VIDEO_ID"
 | `TRANSCRIPTION_PROVIDER` | `openai` | `openai` 或 `local`。 |
 | `VIDEO_MAX_HEIGHT` | `1080` | 下載影片高度上限。 |
 | `VIDEO_CRF` | `18` | Render 品質。數字越低通常檔案越大。 |
+| `SUBTITLE_TIMING_NORMALIZATION` | `true` | 對字幕時間做保守微調；可用 offset、最短顯示、最大延伸與最小間隔設定調整。 |
 
 ## 本機 Whisper
 
@@ -203,6 +204,16 @@ outputs/
       logs/
 ```
 
+常用查找路徑：
+
+- Candidate render: `outputs/videos/<video-id>_<title-slug>/analyses/<analysis-id>/candidates/A/renders/<render-id>/`
+- Direct render: `outputs/videos/<video-id>_<title-slug>/renders/custom/<render-id>/`
+- 搜尋既有輸出：`find outputs/videos -name manifest.json`
+
+Render manifest 會記錄 source fingerprint、transcription provider、publish state，例如 `not-uploaded`。
+
+舊版 output layouts 不會自動遷移；如果你有舊版輸出，請先確認不再需要後再手動刪除。
+
 請不要 commit `outputs/`、`.work/`、generated media 或 `.env`。
 
 ## API 與 CLI
@@ -212,6 +223,9 @@ API 啟動後：
 - API: <http://127.0.0.1:8765>
 - Swagger UI: <http://127.0.0.1:8765/docs>
 - Health: <http://127.0.0.1:8765/health>
+- `POST /api/v1/analysis-jobs`
+- `POST /api/v1/direct-render-jobs`
+- Upload 相關 endpoint 目前仍會回傳 `UPLOAD_NOT_IMPLEMENTED`。
 
 CLI help 是指令細節的主要參考：
 
@@ -231,6 +245,12 @@ docker run --rm \
   -p 8765:8765 \
   -v "$PWD/outputs:/app/outputs" \
   insightcast
+```
+
+如果你的 shell 文件需要 literal command substitution，同一個 volume 可以寫成：
+
+```text
+$(pwd)/outputs:/app/outputs
 ```
 
 Host CLI 連 Docker API 時，設定：

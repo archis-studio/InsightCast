@@ -10,6 +10,7 @@ state, and treat repository CLIs as the canonical operator interface.
    secrets.
 3. Do not start, stop, or restart `uv run cast_api` unless the user explicitly
    asks for server lifecycle work.
+   Do not start or stop the API server for analysis/render tasks.
 4. Keep generated media, `.work/`, `outputs/`, and `.env` out of commits unless
    the user explicitly requests otherwise.
 5. If a command fails because of network, uv cache, package download, YouTube,
@@ -34,6 +35,7 @@ Use the CLI:
 
 ```bash
 uv run cast_analyze "YOUTUBE_URL"
+uv run cast_analyze "<youtube-url>"
 ```
 
 Use `--force` only when the user asks for a fresh analysis. Use `--verbose` when
@@ -42,11 +44,11 @@ raw API payloads are needed for diagnosis.
 Treat `WAITING_SELECTION` as successful analysis completion. Report:
 
 - Analysis job ID.
-- Video root.
-- Analysis ID and directory.
-- Transcript path and known reuse status.
+- Video root; report as video root in summaries.
+- Analysis ID and directory; report as analysis ID in summaries.
+- Transcript path and known transcript reuse status.
 - Candidate IDs, titles, time ranges, and summaries.
-- Candidate directories.
+- Candidate directories; report as candidate directories in summaries.
 - Operation log path.
 
 Do not queue renders unless the user explicitly requests rendering.
@@ -92,7 +94,7 @@ new render work.
 On analysis or render failure:
 
 - Report the structured CLI/API error.
-- Inspect the referenced operation log when available.
+- Inspect the referenced operation log or `pipeline.log` when available.
 - For render failures, inspect `stage-manifest.json` and identify the failed
   stage.
 - Do not invent alternate workflows when the canonical CLI gives a clear

@@ -343,6 +343,35 @@ def test_prints_transcription_chunk_progress_when_available() -> None:
     assert "Transcription: chunk 2/5, attempt 2/3, event=started" in output
 
 
+def test_deduplicates_repeated_transcription_progress_events() -> None:
+    progress = {
+        "stage": "transcription",
+        "event": "started",
+        "chunk_index": 0,
+        "chunk_count": 2,
+        "attempt": 1,
+        "max_attempts": 3,
+    }
+    requester = ScriptedRequester(
+        [
+            healthy_response(),
+            queued_response(),
+            job_response("TRANSCRIBING", "Transcribing English audio.", progress=progress),
+            job_response("TRANSCRIBING", "Transcribing English audio.", progress=progress),
+            job_response("WAITING_SELECTION", "Candidates are ready."),
+        ]
+    )
+
+    code, output, errors = execute(requester)
+
+    assert code == 0
+    assert errors == ""
+    assert (
+        output.count("Transcription: chunk 1/2, attempt 1/3, event=started")
+        == 1
+    )
+
+
 def test_prints_transcription_progress_only_while_transcribing() -> None:
     requester = ScriptedRequester(
         [

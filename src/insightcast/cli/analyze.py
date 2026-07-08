@@ -287,6 +287,7 @@ def run_analysis(
 
         started_at = monotonic()
         previous_status: str | None = None
+        printed_transcription_progress: set[str] = set()
         first_poll = True
         while True:
             if not first_poll:
@@ -314,7 +315,11 @@ def run_analysis(
             )
             if status == "TRANSCRIBING":
                 progress_line = _format_transcription_progress(polled)
-                if progress_line is not None:
+                if (
+                    progress_line is not None
+                    and progress_line not in printed_transcription_progress
+                ):
+                    printed_transcription_progress.add(progress_line)
                     print(progress_line, file=stdout, flush=True)
             previous_status = status
             if status == SUCCESS_STATUS:

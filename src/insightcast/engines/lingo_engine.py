@@ -38,6 +38,55 @@ class SubtitleItem(LingoModel):
         return self
 
 
+class SubtitleTimingPolicy(LingoModel):
+    enabled: bool = True
+    offset_seconds: float = -0.12
+    min_duration_seconds: float = Field(default=0.75, ge=0)
+    max_extension_seconds: float = Field(default=0.30, ge=0)
+    min_gap_seconds: float = Field(default=0.08, ge=0)
+
+    def normalize(
+        self,
+        items: list[SubtitleItem],
+        *,
+        clip_duration_seconds: float,
+    ) -> list[SubtitleItem]:
+        if not self.enabled or not items:
+            return items
+        shifted_starts = [
+            _clamp(item.start_seconds + self.offset_seconds, 0, clip_duration_seconds)
+            for item in items
+        ]
+        normalized: list[SubtitleItem] = []
+        for index, item in enumerate(items):
+            start = shifted_starts[index]
+            shifted_end = _clamp(
+                item.end_seconds + self.offset_seconds,
+                0,
+                clip_duration_seconds,
+            )
+            current_duration = max(0.0, shifted_end - start)
+            extension = min(
+                max(0.0, self.min_duration_seconds - current_duration),
+                self.max_extension_seconds,
+            )
+            end = shifted_end + extension
+            if index + 1 < len(items):
+                end = min(end, shifted_starts[index + 1] - self.min_gap_seconds)
+            end = _clamp(end, start, clip_duration_seconds)
+            if end <= start:
+                end = min(clip_duration_seconds, start + 0.001)
+            normalized.append(
+                item.model_copy(
+                    update={
+                        "start_seconds": round(start, 3),
+                        "end_seconds": round(end, 3),
+                    }
+                )
+            )
+        return normalized
+
+
 class LingoEngine:
     def __init__(
         self,
@@ -45,10 +94,12 @@ class LingoEngine:
         client: Any | None = None,
         model: str | None = None,
         batch_size: int = TRANSLATION_BATCH_SIZE,
+        timing_policy: SubtitleTimingPolicy | None = None,
     ) -> None:
         self.client = client
         self.model = model
         self.batch_size = max(1, batch_size)
+        self.timing_policy = timing_policy or SubtitleTimingPolicy()
 
     async def translate_clip(
         self,
@@ -245,7 +296,10 @@ class LingoEngine:
                     traditional_chinese_text=translated_text,
                 )
             )
-        return items
+        return self.timing_policy.normalize(
+            items,
+            clip_duration_seconds=clip_end_seconds - clip_start_seconds,
+        )
 
     @staticmethod
     def _generation_error(message: str, **details: object) -> InsightCastError:
@@ -260,6 +314,10 @@ class LingoEngine:
 def _is_readable_translation(text: str) -> bool:
     stripped = text.strip()
     return bool(stripped) and any(character.isalnum() for character in stripped)
+
+
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return min(max(value, minimum), maximum)
 
 
 def _salvage_translation_items(

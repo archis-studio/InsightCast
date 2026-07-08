@@ -83,6 +83,11 @@ def test_analysis_cli_settings_have_defaults() -> None:
     assert settings.openai_retry_sleep_seconds == 10
     assert settings.subtitle_chinese_font_size == 72
     assert settings.subtitle_english_font_size == 60
+    assert settings.subtitle_timing_normalization is True
+    assert settings.subtitle_timing_offset_seconds == -0.12
+    assert settings.subtitle_min_duration_seconds == 0.75
+    assert settings.subtitle_max_extension_seconds == 0.30
+    assert settings.subtitle_min_gap_seconds == 0.08
     assert settings.llm_capability_profile == "openai_strict"
     assert settings.effective_translation_batch_size == 24
 
@@ -119,6 +124,11 @@ def test_analysis_cli_settings_load_environment_overrides(
     monkeypatch.setenv("OPENAI_RETRY_SLEEP_SECONDS", "7.5")
     monkeypatch.setenv("SUBTITLE_CHINESE_FONT_SIZE", "88")
     monkeypatch.setenv("SUBTITLE_ENGLISH_FONT_SIZE", "70")
+    monkeypatch.setenv("SUBTITLE_TIMING_NORMALIZATION", "false")
+    monkeypatch.setenv("SUBTITLE_TIMING_OFFSET_SECONDS", "-0.2")
+    monkeypatch.setenv("SUBTITLE_MIN_DURATION_SECONDS", "0.65")
+    monkeypatch.setenv("SUBTITLE_MAX_EXTENSION_SECONDS", "0.2")
+    monkeypatch.setenv("SUBTITLE_MIN_GAP_SECONDS", "0.1")
 
     settings = Settings(_env_file=None, openai_api_key="sk-test-value")
 
@@ -130,6 +140,11 @@ def test_analysis_cli_settings_load_environment_overrides(
     assert settings.openai_retry_sleep_seconds == 7.5
     assert settings.subtitle_chinese_font_size == 88
     assert settings.subtitle_english_font_size == 70
+    assert settings.subtitle_timing_normalization is False
+    assert settings.subtitle_timing_offset_seconds == -0.2
+    assert settings.subtitle_min_duration_seconds == 0.65
+    assert settings.subtitle_max_extension_seconds == 0.2
+    assert settings.subtitle_min_gap_seconds == 0.1
 
 
 def test_ytdlp_js_runtime_can_be_disabled() -> None:
@@ -161,6 +176,9 @@ def test_ytdlp_js_runtime_can_be_disabled() -> None:
         ("openai_retry_sleep_seconds", -1),
         ("subtitle_chinese_font_size", 0),
         ("subtitle_english_font_size", 0),
+        ("subtitle_min_duration_seconds", -1),
+        ("subtitle_max_extension_seconds", -1),
+        ("subtitle_min_gap_seconds", -1),
         ("translation_batch_size", 0),
     ],
 )

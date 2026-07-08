@@ -1,4 +1,5 @@
 import asyncio
+import json
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -34,6 +35,34 @@ class FfmpegClient:
             message="FFmpeg is not available.",
             stage="startup",
         )
+
+    async def media_profile(self, media_path: Path) -> dict[str, object]:
+        source = media_path.expanduser().resolve()
+        result = await self._execute(
+            [
+                self._ffprobe_bin(),
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
+                str(source),
+            ],
+            error_code=ErrorCode.VIDEO_RENDER_FAILED,
+            message="FFprobe failed to inspect media.",
+            stage="rendering",
+        )
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise InsightCastError(
+                ErrorCode.VIDEO_RENDER_FAILED,
+                "FFprobe returned invalid media metadata.",
+                details={"reason": str(exc)},
+                stage="rendering",
+            ) from exc
+        return _media_profile_from_ffprobe(payload)
 
     async def extract_audio(self, source_video: Path, destination: Path) -> Path:
         source = source_video.expanduser().resolve()
@@ -162,3 +191,88 @@ class FfmpegClient:
                 stage=stage,
             )
         return result
+
+    def _ffprobe_bin(self) -> str:
+        ffmpeg_path = Path(self.ffmpeg_bin)
+        if ffmpeg_path.name == "ffmpeg":
+            return str(ffmpeg_path.with_name("ffprobe"))
+        return self.ffmpeg_bin
+
+
+def _media_profile_from_ffprobe(payload: object) -> dict[str, object]:
+    if not isinstance(payload, dict):
+        return {}
+    streams = payload.get("streams")
+    video_stream: dict[str, object] | None = None
+    if isinstance(streams, list):
+        for stream in streams:
+            if isinstance(stream, dict) and stream.get("codec_type") == "video":
+                video_stream = stream
+                break
+    media_format = payload.get("format")
+    if not isinstance(media_format, dict):
+        media_format = {}
+    profile: dict[str, object] = {}
+    if video_stream is not None:
+        _copy_string(profile, "codec", video_stream.get("codec_name"))
+        _copy_int(profile, "width", video_stream.get("width"))
+        _copy_int(profile, "height", video_stream.get("height"))
+        _copy_string(profile, "pixel_format", video_stream.get("pix_fmt"))
+        fps = _parse_frame_rate(video_stream.get("avg_frame_rate"))
+        if fps is not None:
+            profile["fps"] = fps
+    duration = _parse_float(media_format.get("duration"))
+    if duration is not None:
+        profile["duration_seconds"] = duration
+    bitrate = _parse_int(media_format.get("bit_rate"))
+    if bitrate is not None:
+        profile["bitrate"] = bitrate
+    return profile
+
+
+def _copy_string(destination: dict[str, object], key: str, value: object) -> None:
+    if isinstance(value, str) and value:
+        destination[key] = value
+
+
+def _copy_int(destination: dict[str, object], key: str, value: object) -> None:
+    parsed = _parse_int(value)
+    if parsed is not None:
+        destination[key] = parsed
+
+
+def _parse_int(value: object) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_float(value: object) -> float | None:
+    if isinstance(value, int | float):
+        return round(float(value), 3)
+    if isinstance(value, str):
+        try:
+            return round(float(value), 3)
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_frame_rate(value: object) -> float | None:
+    if not isinstance(value, str) or not value or value == "0/0":
+        return None
+    if "/" not in value:
+        return _parse_float(value)
+    numerator, denominator = value.split("/", 1)
+    try:
+        denominator_float = float(denominator)
+        if denominator_float == 0:
+            return None
+        return round(float(numerator) / denominator_float, 3)
+    except ValueError:
+        return None

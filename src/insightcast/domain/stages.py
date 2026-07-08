@@ -42,6 +42,7 @@ class StageRecord(DomainModel):
     completed_at: datetime | None = None
     elapsed_seconds: float | None = Field(default=None, ge=0)
     artifacts: dict[str, Path] = Field(default_factory=dict)
+    metadata: dict[str, object] = Field(default_factory=dict)
     resume_strategy: str = Field(min_length=1)
     fresh: bool = False
     reused: bool = False

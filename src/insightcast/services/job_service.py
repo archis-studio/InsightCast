@@ -671,6 +671,16 @@ class JobService:
                         stage=PipelineStage.CUT_CLIP,
                         status=StageStatus.COMPLETED,
                         artifacts={"temporary_clip": temporary_clip},
+                        metadata={
+                            "source_media": await self._media_profile(
+                                job,
+                                job.source_artifacts.source_video,
+                            ),
+                            "temporary_clip_media": await self._media_profile(
+                                job,
+                                temporary_clip,
+                            ),
+                        },
                     )
                 stage_manifest = self._start_stage_record(
                     render_dir=candidate_dir,
@@ -740,6 +750,10 @@ class JobService:
                         candidate_dir,
                     ),
                 )
+                burn_metadata = {
+                    "input_media": await self._media_profile(job, temporary_clip),
+                    "output_media": await self._media_profile(job, burned_path),
+                }
                 temporary_clip.unlink(missing_ok=True)
                 stage_manifest = self._finish_stage_record(
                     render_dir=candidate_dir,
@@ -747,6 +761,7 @@ class JobService:
                     stage=PipelineStage.BURN_SUBTITLES,
                     status=StageStatus.COMPLETED,
                     artifacts={"video": burned_path},
+                    metadata=burn_metadata,
                 )
                 metadata_path = candidate_dir / "youtube-metadata.json"
                 excerpt = self._transcript_excerpt(transcript, candidate)
@@ -1030,6 +1045,16 @@ class JobService:
                 stage=PipelineStage.CUT_CLIP,
                 status=StageStatus.COMPLETED,
                 artifacts={"temporary_clip": temporary_clip},
+                metadata={
+                    "source_media": await self._media_profile(
+                        job,
+                        source.source_artifacts.source_video,
+                    ),
+                    "temporary_clip_media": await self._media_profile(
+                        job,
+                        temporary_clip,
+                    ),
+                },
             )
             stage_manifest = self._start_stage_record(
                 render_dir=render_dir,
@@ -1094,6 +1119,10 @@ class JobService:
                     render_dir,
                 ),
             )
+            burn_metadata = {
+                "input_media": await self._media_profile(job, temporary_clip),
+                "output_media": await self._media_profile(job, burned_path),
+            }
             temporary_clip.unlink(missing_ok=True)
             stage_manifest = self._finish_stage_record(
                 render_dir=render_dir,
@@ -1101,6 +1130,7 @@ class JobService:
                 stage=PipelineStage.BURN_SUBTITLES,
                 status=StageStatus.COMPLETED,
                 artifacts={"video": burned_path},
+                metadata=burn_metadata,
             )
             metadata_path = render_dir / "youtube-metadata.json"
             excerpt = self._transcript_excerpt(transcript, selection)
@@ -1371,6 +1401,28 @@ class JobService:
                 stage="rendering",
             )
         return lookup.entry.manifest.source_fingerprint
+
+    async def _media_profile(
+        self,
+        job: AnalysisJob | DirectRenderJob,
+        path: Path,
+    ) -> dict[str, object]:
+        ffmpeg = getattr(self.clip_engine, "ffmpeg", None)
+        media_profile = getattr(ffmpeg, "media_profile", None)
+        if media_profile is None:
+            return {}
+        try:
+            profile = await media_profile(path)
+        except Exception as exc:
+            get_job_logger(job.job_id, job.output_dir).warning(
+                "media_profile_failed path=%s reason=%s",
+                path,
+                exc,
+            )
+            return {}
+        if isinstance(profile, dict):
+            return profile
+        return {}
 
     async def _run_stage(
         self,
@@ -1684,6 +1736,7 @@ class JobService:
         stage: PipelineStage,
         status: StageStatus,
         artifacts: dict[str, Path] | None = None,
+        metadata: dict[str, object] | None = None,
         error: JobError | None = None,
         resume_strategy: str | None = None,
     ) -> StageManifest:
@@ -1704,6 +1757,8 @@ class JobService:
                     ).total_seconds()
                 if artifacts is not None:
                     record.artifacts = artifacts
+                if metadata is not None:
+                    record.metadata = metadata
                 record.error = error
                 if resume_strategy is not None:
                     record.resume_strategy = resume_strategy
@@ -1717,6 +1772,7 @@ class JobService:
                 status=status,
                 completed_at=completed_at,
                 artifacts=artifacts or {},
+                metadata=metadata or {},
                 resume_strategy=(
                     resume_strategy or f"rerun render to resume from {stage.value}"
                 ),
