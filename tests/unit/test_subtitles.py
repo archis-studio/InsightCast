@@ -53,6 +53,8 @@ def test_serialize_bilingual_ass_has_styles_escaped_text_and_stable_events() -> 
     )
     assert int(chinese_style.split(",")[2]) >= 72
     assert int(english_style.split(",")[2]) >= 60
+    assert chinese_style.split(",")[19:21] == ["120", "120"]
+    assert english_style.split(",")[19:21] == ["120", "120"]
     assert "&H0082E0FF" in chinese_style
     assert int(chinese_style.split(",")[-2]) - int(english_style.split(",")[-2]) >= 145
     assert "Dialogue: 0,0:00:01.00,0:00:03.46,English" in output
@@ -77,7 +79,11 @@ def test_serialize_bilingual_ass_accepts_configurable_font_sizes() -> None:
     output = serialize_bilingual_ass(
         items,
         title="Video Title",
-        style=BilingualAssStyle(chinese_font_size=84, english_font_size=68),
+        style=BilingualAssStyle(
+            chinese_font_size=84,
+            english_font_size=68,
+            horizontal_margin=140,
+        ),
     )
 
     chinese_style = next(
@@ -88,3 +94,5 @@ def test_serialize_bilingual_ass_accepts_configurable_font_sizes() -> None:
     )
     assert chinese_style.split(",")[2] == "84"
     assert english_style.split(",")[2] == "68"
+    assert chinese_style.split(",")[19:21] == ["140", "140"]
+    assert english_style.split(",")[19:21] == ["140", "140"]

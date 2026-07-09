@@ -84,6 +84,9 @@ def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None
     curator_payload = json.loads(curator_user)
     assert curator.PROMPT_VERSION == "curator-v6"
     assert selection_review.PROMPT_VERSION == "selection-review-v1"
+    assert "translate every source item" in translation.SYSTEM_PROMPT.lower()
+    assert "filler" in translation.SYSTEM_PROMPT.lower()
+    assert "never summarize" in translation.SYSTEM_PROMPT.lower()
     assert "original source timestamps" in curator.SYSTEM_PROMPT
     assert "lowest avoidable waste" in curator.SYSTEM_PROMPT
     assert curator_payload["topics"][0]["topic_id"] == "T1"
@@ -172,7 +175,7 @@ def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None
     assert "rank 1" in selection_review_payload["goal"]
     assert '"segment_id":"s1"' in translation_user
     translation_payload = json.loads(translation_user)
-    assert translation.PROMPT_VERSION == "translation-v2"
+    assert translation.PROMPT_VERSION == "translation-v3"
     assert translation_payload["item_count"] == 1
     assert translation_payload["required_segment_ids"] == ["s1"]
     assert translation_payload["mapping_contract"] == {

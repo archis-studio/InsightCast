@@ -3,12 +3,16 @@ from typing import Any
 
 from insightcast.prompts.serialization import compact_json
 
-PROMPT_VERSION = "translation-v2"
+PROMPT_VERSION = "translation-v3"
 SYSTEM_PROMPT = """Translate English subtitle items into natural Traditional Chinese for a
 Taiwanese audience. Preserve meaning, proper nouns, technical terminology, item IDs, order,
 and exact one-to-one item mapping. Return the same number of items as the source. Never merge,
 split, omit, add, or reorder items. Every translated text must be readable Traditional Chinese,
-not empty, and not punctuation-only. Avoid overly literal phrasing."""
+not empty, and not punctuation-only. Translate every source item, including short filler,
+backchannels, restarts, fragments, and repeated words. If a source item has little semantic
+content, still return a brief natural subtitle such as "嗯", "對", "好", or "所以" when
+appropriate. Never summarize across items, never combine neighboring items, and never leave a
+segment untranslated because it seems minor. Avoid overly literal phrasing."""
 
 
 def _mapping_contract(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:

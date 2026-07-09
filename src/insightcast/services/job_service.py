@@ -779,7 +779,11 @@ class JobService:
                     excerpt=excerpt,
                     metadata_path=metadata_path: self.publish_engine.generate(
                         source_metadata=source_metadata,
+                        candidate_id=candidate.candidate_id,
+                        candidate_start_seconds=candidate.start_seconds,
+                        candidate_end_seconds=candidate.end_seconds,
                         candidate_suggested_title=candidate.suggested_title,
+                        candidate_selection_reason=candidate.selection_reason,
                         summary=candidate.summary,
                         transcript_excerpt=excerpt,
                         candidate_core_claim=candidate.core_claim,
@@ -1146,7 +1150,11 @@ class JobService:
                 PipelineStage.GENERATE_METADATA.value,
                 lambda: self.publish_engine.generate(
                     source_metadata=source.metadata,
+                    candidate_id=selection.candidate_id,
+                    candidate_start_seconds=selection.start_seconds,
+                    candidate_end_seconds=selection.end_seconds,
                     candidate_suggested_title=selection.suggested_title,
+                    candidate_selection_reason=selection.selection_reason,
                     summary=selection.summary,
                     transcript_excerpt=excerpt,
                     candidate_core_claim=selection.core_claim,

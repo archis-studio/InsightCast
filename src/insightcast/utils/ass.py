@@ -9,6 +9,7 @@ from insightcast.utils.timecode import format_ass_time
 class BilingualAssStyle:
     chinese_font_size: int = 72
     english_font_size: int = 60
+    horizontal_margin: int = 120
 
 
 def _escape_ass_text(value: str) -> str:
@@ -74,8 +75,8 @@ def serialize_bilingual_ass(
         "3",
         "1",
         "2",
-        "80",
-        "80",
+        str(resolved_style.horizontal_margin),
+        str(resolved_style.horizontal_margin),
         "245",
         "1",
     )
@@ -99,8 +100,8 @@ def serialize_bilingual_ass(
         "3",
         "1",
         "2",
-        "80",
-        "80",
+        str(resolved_style.horizontal_margin),
+        str(resolved_style.horizontal_margin),
         "100",
         "1",
     )

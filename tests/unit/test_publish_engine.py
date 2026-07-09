@@ -120,7 +120,11 @@ async def test_publish_engine_generates_private_metadata_and_writes_traceable_js
 
     metadata = await engine.generate(
         source_metadata=source,
+        candidate_id="A",
+        candidate_start_seconds=12.5,
+        candidate_end_seconds=72.75,
         candidate_suggested_title="Candidate title",
+        candidate_selection_reason="Candidate was the strongest standalone segment.",
         summary="Candidate summary",
         transcript_excerpt="Transcript excerpt",
         candidate_core_claim="Candidate core claim",
@@ -140,6 +144,19 @@ async def test_publish_engine_generates_private_metadata_and_writes_traceable_js
     }
     assert payload["generated"]["privacy_status"] == "private"
     assert payload["source"]["video_id"] == "abc123DEF_-"
+    assert payload["candidate"] == {
+        "candidate_id": "A",
+        "start_seconds": 12.5,
+        "end_seconds": 72.75,
+        "duration_seconds": 60.25,
+        "suggested_title": "Candidate title",
+        "selection_reason": "Candidate was the strongest standalone segment.",
+        "summary": "Candidate summary",
+        "core_claim": "Candidate core claim",
+        "payoff": "Candidate payoff",
+        "argument_arc": ["setup", "evidence", "payoff"],
+        "boundary_notes": {"start": "starts cleanly", "end": "ends cleanly"},
+    }
     assert payload["trace"]["model"] == "gpt-metadata"
     assert payload["trace"]["prompt_version"] == "metadata-v15"
     call_prompt = json.loads(str(client.calls[0]["user_prompt"]))

@@ -63,7 +63,11 @@ class PublishEngine:
         self,
         *,
         source_metadata: YouTubeMetadata,
+        candidate_id: str | None = None,
+        candidate_start_seconds: float | None = None,
+        candidate_end_seconds: float | None = None,
         candidate_suggested_title: str | None = None,
+        candidate_selection_reason: str | None = None,
         summary: str,
         transcript_excerpt: str,
         candidate_core_claim: str | None = None,
@@ -98,6 +102,18 @@ class PublishEngine:
             destination,
             {
                 "source": source_metadata.model_dump(mode="json"),
+                "candidate": _candidate_metadata(
+                    candidate_id=candidate_id,
+                    start_seconds=candidate_start_seconds,
+                    end_seconds=candidate_end_seconds,
+                    suggested_title=candidate_suggested_title,
+                    selection_reason=candidate_selection_reason,
+                    summary=summary,
+                    core_claim=candidate_core_claim,
+                    payoff=candidate_payoff,
+                    argument_arc=candidate_argument_arc,
+                    boundary_notes=candidate_boundary_notes,
+                ),
                 "generated": generated.model_dump(mode="json"),
                 "trace": {
                     "model": self.model,
@@ -106,6 +122,37 @@ class PublishEngine:
             },
         )
         return generated
+
+
+def _candidate_metadata(
+    *,
+    candidate_id: str | None,
+    start_seconds: float | None,
+    end_seconds: float | None,
+    suggested_title: str | None,
+    selection_reason: str | None,
+    summary: str,
+    core_claim: str | None,
+    payoff: str | None,
+    argument_arc: Sequence[str] | None,
+    boundary_notes: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    duration_seconds = None
+    if start_seconds is not None and end_seconds is not None:
+        duration_seconds = max(0.0, end_seconds - start_seconds)
+    return {
+        "candidate_id": candidate_id,
+        "start_seconds": start_seconds,
+        "end_seconds": end_seconds,
+        "duration_seconds": duration_seconds,
+        "suggested_title": suggested_title,
+        "selection_reason": selection_reason,
+        "summary": summary,
+        "core_claim": core_claim,
+        "payoff": payoff,
+        "argument_arc": list(argument_arc or []),
+        "boundary_notes": dict(boundary_notes or {}),
+    }
 
 
 def _normalize_description(description: str) -> str:
