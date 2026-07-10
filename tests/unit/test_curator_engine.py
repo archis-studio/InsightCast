@@ -1132,6 +1132,48 @@ async def test_selection_review_can_extend_boundary_to_natural_ending() -> None:
 
 
 @pytest.mark.asyncio
+async def test_selection_review_boundary_summary_uses_validated_times() -> None:
+    client = FakeStructuredClient(
+        [
+            CuratorResponse(
+                candidates=[output("A", 0, 480, boundary_ending_type="open_loop")]
+            ),
+            SelectionReviewResponse(
+                candidates=[
+                    SelectionReviewCandidateOutput(
+                        candidate_id="A",
+                        rank=1,
+                        adjusted_start_seconds=0,
+                        adjusted_end_seconds=540,
+                        selection_reason="The extra minute completes the argument.",
+                        boundary_adjustment_reason=(
+                            "Trimmed the ending from 480.00 to 33.04."
+                        ),
+                        risk_notes="Extension stays within target duration.",
+                    )
+                ]
+            ),
+        ]
+    )
+
+    result = await CuratorEngine(
+        client=client,
+        model="gpt-curator",
+        enable_selection_review=True,
+    ).select_candidates(
+        transcript=segmented_transcript((0, 480), (480, 540), (540, 900)),
+        topics=valid_topics(),
+        candidate_count=1,
+        min_duration_minutes=8,
+        max_duration_minutes=12,
+    )
+
+    reason = result.candidates[0].selection_reason
+    assert "Trimmed the ending from 480.00 to 33.04" not in reason
+    assert "Boundary review: adjusted from 0.00-480.00s to 0.00-540.00s." in reason
+
+
+@pytest.mark.asyncio
 async def test_selection_review_uses_compact_candidate_context() -> None:
     client = FakeStructuredClient(
         [

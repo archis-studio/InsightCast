@@ -84,6 +84,7 @@ def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None
     curator_payload = json.loads(curator_user)
     assert curator.PROMPT_VERSION == "curator-v6"
     assert selection_review.PROMPT_VERSION == "selection-review-v1"
+    assert "do not write timestamp ranges" in selection_review_user
     assert "translate every source item" in translation.SYSTEM_PROMPT.lower()
     assert "filler" in translation.SYSTEM_PROMPT.lower()
     assert "never summarize" in translation.SYSTEM_PROMPT.lower()

@@ -58,7 +58,9 @@ def build_user_prompt(
         "return_requirements": (
             "Return every input candidate exactly once. Ranks must be unique integers from "
             "1 to candidate_count. adjusted_start_seconds and adjusted_end_seconds must be "
-            "original source timestamps within the final duration range."
+            "original source timestamps within the final duration range. In "
+            "boundary_adjustment_reason, explain the reason in words and do not write "
+            "timestamp ranges such as 'from X to Y'."
         ),
         "candidates": list(candidates),
         "transcript": list(transcript),

@@ -1526,9 +1526,24 @@ def _reviewed_selection_reason(
 ) -> str:
     return (
         f"Selection review rank #{review.rank}: {review.selection_reason} "
-        f"Boundary review: {review.boundary_adjustment_reason} "
+        f"Boundary review: {_boundary_review_summary(original, review)} "
         f"Risk notes: {review.risk_notes} "
         f"Original candidate reason: {original.selection_reason}"
+    )
+
+
+def _boundary_review_summary(
+    original: CuratorCandidateOutput,
+    review: SelectionReviewCandidateOutput,
+) -> str:
+    original_range = (original.start_seconds, original.end_seconds)
+    adjusted_range = (review.adjusted_start_seconds, review.adjusted_end_seconds)
+    if original_range == adjusted_range:
+        return "no boundary adjustment applied."
+    return (
+        "adjusted from "
+        f"{original.start_seconds:.2f}-{original.end_seconds:.2f}s to "
+        f"{review.adjusted_start_seconds:.2f}-{review.adjusted_end_seconds:.2f}s."
     )
 
 
