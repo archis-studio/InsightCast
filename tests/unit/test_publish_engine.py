@@ -158,7 +158,7 @@ async def test_publish_engine_generates_private_metadata_and_writes_traceable_js
         "boundary_notes": {"start": "starts cleanly", "end": "ends cleanly"},
     }
     assert payload["trace"]["model"] == "gpt-metadata"
-    assert payload["trace"]["prompt_version"] == "metadata-v15"
+    assert payload["trace"]["prompt_version"] == "metadata-v16"
     call_prompt = json.loads(str(client.calls[0]["user_prompt"]))
     assert call_prompt["candidate_suggested_title"] == "Candidate title"
     assert call_prompt["candidate_editorial_package"] == {

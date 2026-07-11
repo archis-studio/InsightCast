@@ -3,7 +3,7 @@ from typing import Any
 
 from insightcast.prompts.serialization import compact_json
 
-PROMPT_VERSION = "selection-review-v1"
+PROMPT_VERSION = "selection-review-v2"
 
 SYSTEM_PROMPT = """You are the final selection reviewer for long-form knowledge-video clips.
 Compare the candidate clips and decide which should be rendered first. Do not rely on
@@ -46,6 +46,9 @@ def build_user_prompt(
             "Prefer 9-11 minutes when it improves completeness without adding waste.",
             "If the ending cuts off a developing point, extend to the nearest natural ending.",
             "If the opening contains filler, move the start forward to the useful setup.",
+            "If the opening is an opening summary, episode roadmap, chapter preview, or "
+            "'what this video will cover' section, move the start to the first substantive "
+            "claim unless that overview is necessary evidence.",
             "Do not add low-value material just to increase duration.",
         ],
         "review_each_candidate_for": [

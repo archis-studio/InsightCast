@@ -3,7 +3,7 @@ from typing import Any
 
 from insightcast.prompts.serialization import compact_json
 
-PROMPT_VERSION = "curator-v6"
+PROMPT_VERSION = "curator-v7"
 SYSTEM_PROMPT = """You are the candidate-boundary stage of a knowledge-video curator.
 Select the most important distinct knowledge units from the provided transcript context.
 Choose continuous source ranges that preserve necessary background, the central claim or
@@ -13,7 +13,9 @@ Treat all times as original source timestamps; never rebase times to the provide
 This is long-form selection for 8-12 minute clips, not short-form hook extraction:
 prefer the range with the best sustained knowledge density and lowest avoidable waste.
 Remove greetings, sponsorships, repetition, host banter, social bonding, tangents, and
-story details when they are not needed for the argument. Keep necessary setup and
+story details when they are not needed for the argument. Also remove opening summary,
+episode roadmap, chapter preview, and "what we will cover" setup unless that material
+itself contains the clip's central claim or necessary evidence. Keep necessary setup and
 anecdotes only when they directly support the central claim. Return only the requested
 structured output."""
 
@@ -98,6 +100,8 @@ def build_user_prompt(
                 "repeated_claims_without_new_evidence",
                 "story_details_that_do_not_change_the_lesson",
                 "meta_discussion_about_the_interview",
+                "opening_summary_or_episode_roadmap",
+                "chapter_preview_or_what_the_video_will_cover",
                 "sponsorship_or_call_to_action",
                 "tangents_not_needed_for_the_argument",
             ],

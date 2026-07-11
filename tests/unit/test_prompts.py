@@ -82,9 +82,12 @@ def test_prompt_modules_have_versions_contracts_and_data_only_builders() -> None
     assert "\n" not in metadata_user
     assert "\n" not in selection_review_user
     curator_payload = json.loads(curator_user)
-    assert curator.PROMPT_VERSION == "curator-v6"
-    assert selection_review.PROMPT_VERSION == "selection-review-v1"
+    assert curator.PROMPT_VERSION == "curator-v7"
+    assert selection_review.PROMPT_VERSION == "selection-review-v2"
     assert "do not write timestamp ranges" in selection_review_user
+    assert "episode roadmap" in curator.SYSTEM_PROMPT
+    assert "opening_summary_or_episode_roadmap" in curator_user
+    assert "opening summary" in selection_review_user
     assert "translate every source item" in translation.SYSTEM_PROMPT.lower()
     assert "filler" in translation.SYSTEM_PROMPT.lower()
     assert "never summarize" in translation.SYSTEM_PROMPT.lower()
@@ -280,7 +283,8 @@ def test_metadata_prompt_uses_grounded_knowledge_news_framing() -> None:
     payload = json.loads(prompt)
     system = metadata.SYSTEM_PROMPT.lower()
 
-    assert metadata.PROMPT_VERSION == "metadata-v15"
+    assert metadata.PROMPT_VERSION == "metadata-v16"
+    assert "do not default to 如果你" in metadata.SYSTEM_PROMPT
     assert "traditional chinese" in system
     assert "youtube metadata" in system
     assert "knowledge highlight" in system
@@ -338,7 +342,7 @@ def test_metadata_prompt_preserves_source_title_equity_for_highlight_metadata() 
     payload = json.loads(prompt)
     system = metadata.SYSTEM_PROMPT.lower()
 
-    assert metadata.PROMPT_VERSION == "metadata-v15"
+    assert metadata.PROMPT_VERSION == "metadata-v16"
     assert "source title" in system
     assert "highlight" in system
     assert "traditional chinese title" in system

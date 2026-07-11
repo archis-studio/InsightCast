@@ -60,6 +60,7 @@ def output(
     end: float,
     *,
     title: str = "Title",
+    core_claim: str = "Core claim",
     score: float | None = 0.9,
     boundary_ending_type: str = "conclusion",
 ) -> CuratorCandidateOutput:
@@ -70,7 +71,7 @@ def output(
         suggested_title=title,
         selection_reason="Complete idea arc",
         summary="Useful summary",
-        core_claim="Core claim",
+        core_claim=core_claim,
         payoff="Viewer payoff",
         argument_arc=["setup", "claim", "evidence", "conclusion"],
         boundary_start_reason="Starts at useful setup",
@@ -330,7 +331,7 @@ async def test_curate_discovers_topics_then_selects_candidates() -> None:
     candidate_payload = json.loads(str(client.calls[1]["user_prompt"]))
     assert candidate_payload["topics"][0]["topic_id"] == "T1"
     assert candidate_payload["topics"][1]["topic_id"] == "T2"
-    assert result.prompt_version == "topic-discovery-v3+curator-v6"
+    assert result.prompt_version == "topic-discovery-v3+curator-v7"
 
 
 @pytest.mark.asyncio
@@ -893,6 +894,73 @@ async def test_curator_normalizes_candidates_to_complete_segments(
 
 
 @pytest.mark.asyncio
+async def test_curator_retries_when_same_range_has_different_core_claims() -> None:
+    client = FakeStructuredClient(
+        [
+            CuratorResponse(
+                candidates=[
+                    output(
+                        "A",
+                        0,
+                        480,
+                        title="Share personal, not private",
+                        core_claim="Early conversation should be personal but not private.",
+                    ),
+                    output(
+                        "B",
+                        0,
+                        480,
+                        title="Use because to make answers meaningful",
+                        core_claim="Adding because reveals motive in ordinary answers.",
+                    ),
+                ]
+            ),
+            CuratorResponse(
+                candidates=[
+                    output(
+                        "A",
+                        0,
+                        480,
+                        title="Share personal, not private",
+                        core_claim="Early conversation should be personal but not private.",
+                    ),
+                    output(
+                        "B",
+                        240,
+                        720,
+                        title="Use because to make answers meaningful",
+                        core_claim="Adding because reveals motive in ordinary answers.",
+                    ),
+                ]
+            ),
+        ]
+    )
+
+    result = await CuratorEngine(client=client, model="gpt-curator").select_candidates(
+        transcript=segmented_transcript(
+            (0, 120),
+            (120, 240),
+            (240, 360),
+            (360, 480),
+            (480, 600),
+            (600, 720),
+        ),
+        topics=valid_topics(candidate_count=2),
+        candidate_count=2,
+        min_duration_minutes=8,
+        max_duration_minutes=12,
+    )
+
+    assert len(client.calls) == 2
+    retry_payload = json.loads(str(client.calls[1]["user_prompt"]))
+    assert "same normalized range" in retry_payload["validation_feedback"]
+    assert "different core claims" in retry_payload["validation_feedback"]
+    by_id = {candidate.candidate_id: candidate for candidate in result.candidates}
+    assert (by_id["A"].start_seconds, by_id["A"].end_seconds) == (0, 480)
+    assert (by_id["B"].start_seconds, by_id["B"].end_seconds) == (240, 720)
+
+
+@pytest.mark.asyncio
 async def test_selection_review_can_rank_lower_scored_candidate_first() -> None:
     client = FakeStructuredClient(
         [
@@ -1171,6 +1239,56 @@ async def test_selection_review_boundary_summary_uses_validated_times() -> None:
     reason = result.candidates[0].selection_reason
     assert "Trimmed the ending from 480.00 to 33.04" not in reason
     assert "Boundary review: adjusted from 0.00-480.00s to 0.00-540.00s." in reason
+
+
+@pytest.mark.asyncio
+async def test_selection_review_normalization_preserves_trimmed_start() -> None:
+    client = FakeStructuredClient(
+        [
+            CuratorResponse(
+                candidates=[output("A", 0, 480, boundary_ending_type="open_loop")]
+            ),
+            SelectionReviewResponse(
+                candidates=[
+                    SelectionReviewCandidateOutput(
+                        candidate_id="A",
+                        rank=1,
+                        adjusted_start_seconds=44,
+                        adjusted_end_seconds=486,
+                        selection_reason="The useful section starts after the CTA.",
+                        boundary_adjustment_reason="Removes opening call to action.",
+                        risk_notes="The end can extend forward to preserve duration.",
+                    )
+                ]
+            ),
+        ]
+    )
+
+    result = await CuratorEngine(
+        client=client,
+        model="gpt-curator",
+        enable_selection_review=True,
+    ).select_candidates(
+        transcript=segmented_transcript(
+            (0, 22),
+            (22, 44),
+            (44, 260),
+            (260, 486),
+            (486, 504),
+            (504, 526),
+            (526, 700),
+        ),
+        topics=valid_topics(),
+        candidate_count=1,
+        min_duration_minutes=8,
+        max_duration_minutes=12,
+    )
+
+    candidate = result.candidates[0]
+    assert (candidate.start_seconds, candidate.end_seconds) == (44, 526)
+    assert "Boundary review: adjusted from 0.00-486.00s to 44.00-526.00s." in (
+        candidate.selection_reason
+    )
 
 
 @pytest.mark.asyncio

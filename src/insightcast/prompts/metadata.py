@@ -3,7 +3,7 @@ from typing import Any
 
 from insightcast.prompts.serialization import compact_json
 
-PROMPT_VERSION = "metadata-v15"
+PROMPT_VERSION = "metadata-v16"
 SYSTEM_PROMPT = """Create evidence-grounded Traditional Chinese YouTube metadata for an
 InsightCast translated knowledge highlight from a foreign-language source video.
 
@@ -58,8 +58,11 @@ directly supports that tone. Prefer sharper but cleaner phrasing such as 殘酷�
 只會刷題不再夠用.
 
 The description should read like publishable channel copy, not a raw summary. Open with a
-hook for the target viewer, explain why the clip matters now, then summarize what the
-viewer will understand after watching with enough reasoning or examples to feel concrete.
+specific editorial hook for the selected clip, explain why the clip matters now, then
+summarize what the viewer will understand after watching with enough reasoning or examples
+to feel concrete. Vary the opening sentence across clips: do not default to 如果你,
+如果你也, 這段內容, or 這支片 as the first phrase. Prefer concrete openings such as
+a surprising fact, named tension, market/role shift, mistaken assumption, or mechanism.
 Write one compact paragraph without newline characters. Do not mention InsightCast in the
 description body; the system appends the fixed InsightCast disclosure after generation.
 Return title, description, accurate tags, and a privacy status that defaults to private."""

@@ -17,6 +17,7 @@ from insightcast.prompts.serialization import (
 
 ACCEPTED_DURATION_TOLERANCE_SECONDS = 60
 FINAL_DURATION_SEGMENT_TOLERANCE_SECONDS = 30
+SEMANTIC_DUPLICATE_RANGE_TOLERANCE_SECONDS = 5
 TOPIC_POOL_MULTIPLIER = 2
 TOPIC_PRE_BUFFER_SECONDS = 120
 TOPIC_POST_BUFFER_SECONDS = 180
@@ -521,7 +522,11 @@ class CuratorEngine:
                 final_min_duration_seconds=final_min_duration_seconds,
                 final_max_duration_seconds=final_max_duration_seconds,
             )
-            errors = normalization_errors + errors
+            errors = (
+                normalization_errors
+                + errors
+                + _semantic_duplicate_range_errors(normalized_candidates)
+            )
             has_acceptable_partial_result = (
                 normalized_candidates
                 and _only_candidate_count_shortage(errors)
@@ -1321,6 +1326,7 @@ def _normalize_candidate(
     accepted_max_duration_seconds: float,
     final_min_duration_seconds: float,
     final_max_duration_seconds: float,
+    start_floor_seconds: float | None = None,
 ) -> CuratorCandidateOutput | None:
     if candidate.end_seconds <= candidate.start_seconds or not segments:
         return None
@@ -1347,7 +1353,7 @@ def _normalize_candidate(
 
     first_overlap_index = overlapping_indexes[0]
     last_overlap_index = overlapping_indexes[-1]
-    options: list[tuple[int, float, float, int, int]] = []
+    options: list[tuple[int, int, float, float, int, int]] = []
     for start_index in range(last_overlap_index + 1):
         start_segment = segments[start_index]
         first_end_index = max(start_index, first_overlap_index)
@@ -1366,6 +1372,12 @@ def _normalize_candidate(
                 duration_tier = 1
             else:
                 duration_tier = 2
+            start_floor_tier = (
+                0
+                if start_floor_seconds is None
+                or start_segment.start_seconds >= start_floor_seconds
+                else 1
+            )
             boundary_distance = (
                 abs(start_segment.start_seconds - candidate.start_seconds)
                 + abs(segments[end_index].end_seconds - candidate.end_seconds)
@@ -1373,6 +1385,7 @@ def _normalize_candidate(
             options.append(
                 (
                     duration_tier,
+                    start_floor_tier,
                     -retained_overlap,
                     boundary_distance,
                     start_index,
@@ -1382,7 +1395,7 @@ def _normalize_candidate(
 
     if not options:
         return None
-    _, _, _, start_index, end_index = min(options)
+    _, _, _, _, start_index, end_index = min(options)
     return _with_segment_bounds(candidate, segments, start_index, end_index)
 
 
@@ -1437,7 +1450,6 @@ def _apply_selection_review(
             update={
                 "start_seconds": review.adjusted_start_seconds,
                 "end_seconds": review.adjusted_end_seconds,
-                "selection_reason": _reviewed_selection_reason(original, review),
                 "score": _review_rank_score(review.rank),
             }
         )
@@ -1450,6 +1462,11 @@ def _apply_selection_review(
             accepted_max_duration_seconds=accepted_max_duration_seconds,
             final_min_duration_seconds=final_min_duration_seconds,
             final_max_duration_seconds=final_max_duration_seconds,
+            start_floor_seconds=(
+                review.adjusted_start_seconds
+                if review.adjusted_start_seconds > original.start_seconds
+                else None
+            ),
         )
         if normalized is None:
             errors.append(
@@ -1457,6 +1474,15 @@ def _apply_selection_review(
                 "normalized to a valid segment-aligned range"
             )
             normalized = adjusted
+        normalized = normalized.model_copy(
+            update={
+                "selection_reason": _reviewed_selection_reason(
+                    original,
+                    review,
+                    normalized,
+                )
+            }
+        )
         reviewed.append(normalized)
 
     missing = expected_ids - seen_ids
@@ -1523,10 +1549,11 @@ def _review_rank_score(rank: int) -> float:
 def _reviewed_selection_reason(
     original: CuratorCandidateOutput,
     review: SelectionReviewCandidateOutput,
+    final: CuratorCandidateOutput,
 ) -> str:
     return (
         f"Selection review rank #{review.rank}: {review.selection_reason} "
-        f"Boundary review: {_boundary_review_summary(original, review)} "
+        f"Boundary review: {_boundary_review_summary(original, final)} "
         f"Risk notes: {review.risk_notes} "
         f"Original candidate reason: {original.selection_reason}"
     )
@@ -1534,16 +1561,16 @@ def _reviewed_selection_reason(
 
 def _boundary_review_summary(
     original: CuratorCandidateOutput,
-    review: SelectionReviewCandidateOutput,
+    final: CuratorCandidateOutput,
 ) -> str:
     original_range = (original.start_seconds, original.end_seconds)
-    adjusted_range = (review.adjusted_start_seconds, review.adjusted_end_seconds)
-    if original_range == adjusted_range:
+    final_range = (final.start_seconds, final.end_seconds)
+    if original_range == final_range:
         return "no boundary adjustment applied."
     return (
         "adjusted from "
         f"{original.start_seconds:.2f}-{original.end_seconds:.2f}s to "
-        f"{review.adjusted_start_seconds:.2f}-{review.adjusted_end_seconds:.2f}s."
+        f"{final.start_seconds:.2f}-{final.end_seconds:.2f}s."
     )
 
 
@@ -1565,6 +1592,47 @@ def _only_candidate_count_shortage(errors: Sequence[str]) -> bool:
     return bool(errors) and all(
         error.startswith("candidate count must be ") for error in errors
     )
+
+
+def _semantic_duplicate_range_errors(
+    candidates: Sequence[CuratorCandidateOutput],
+) -> list[str]:
+    errors: list[str] = []
+    for index, candidate in enumerate(candidates):
+        for other in candidates[index + 1 :]:
+            if not _has_same_normalized_range(candidate, other):
+                continue
+            if _semantic_text(candidate.core_claim) == _semantic_text(other.core_claim):
+                continue
+            if _semantic_text(candidate.suggested_title) == _semantic_text(
+                other.suggested_title
+            ):
+                continue
+            errors.append(
+                f"candidates {candidate.candidate_id} and {other.candidate_id} "
+                "have the same normalized range "
+                f"{candidate.start_seconds:.2f}-{candidate.end_seconds:.2f}s "
+                "but different core claims; choose distinct boundaries that support "
+                "each candidate's title and core claim, or merge the reasoning into "
+                "one candidate and select another distinct knowledge unit."
+            )
+    return errors
+
+
+def _has_same_normalized_range(
+    candidate: CuratorCandidateOutput,
+    other: CuratorCandidateOutput,
+) -> bool:
+    return (
+        abs(candidate.start_seconds - other.start_seconds)
+        <= SEMANTIC_DUPLICATE_RANGE_TOLERANCE_SECONDS
+        and abs(candidate.end_seconds - other.end_seconds)
+        <= SEMANTIC_DUPLICATE_RANGE_TOLERANCE_SECONDS
+    )
+
+
+def _semantic_text(value: str) -> str:
+    return "".join(character.lower() for character in value if character.isalnum())
 
 
 def _window_duration(
